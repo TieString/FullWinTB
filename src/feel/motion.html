@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:">
+<title>FullWinTB</title>
+<link rel="icon" href="data:,">
+<style>{{FEEL_CSS}}</style>
+<style>
+:root {
+  color-scheme: light;
+  --paper: #f6f7f4;
+  --surface: #fff;
+  --text: #202820;
+  --muted: #5a675d;
+  --line: #dfe5dd;
+  --accent: #335442;
+  --tint: #e5eee6;
+  --sans: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  margin: 0; height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
+  background: var(--paper); color: var(--text); font: 13px/1.45 var(--sans);
+}
+button, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+:is(button, select, input, summary):focus-visible { outline: 2px solid #61856f; outline-offset: 2px; }
+.au-header, .au-footer {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 9px 20px; background: var(--surface);
+}
+.au-header { border-bottom: 1px solid var(--line); }
+.au-footer { border-top: 1px solid var(--line); }
+.au-tabs { display: flex; gap: 3px; }
+.au-tab, .au-button {
+  border: 1px solid transparent; border-radius: 7px; min-height: 32px;
+  padding: 4px 12px; background: transparent; color: var(--muted);
+}
+.au-tab:hover, .au-button:hover { background: var(--paper); color: var(--text); }
+.au-tab[aria-selected="true"] { background: var(--tint); color: var(--accent); font-weight: 650; }
+.au-language { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+.au-select, .au-key, .au-reset {
+  background: var(--surface); color: var(--text); border: 1px solid var(--line);
+  border-radius: 7px; padding: 5px 9px; min-height: 32px;
+}
+.au-key { display: inline-flex; align-items: center; gap: 10px; }
+.au-key kbd { font: 12px ui-monospace, monospace; color: var(--muted); }
+.au-key:hover, .au-reset:hover, .au-select:hover { border-color: #9dac9f; }
+.au-key span { color: var(--accent); }
+main { padding: 16px 20px; overflow: auto; scrollbar-gutter: stable; }
+h1, h2, p { margin: 0; }
+h1 { font-size: 16px; font-weight: 650; }
+h2 { font-size: 14px; font-weight: 650; }
+.au-return {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px 16px;
+  border-bottom: 1px solid var(--line); padding-bottom: 12px; margin-bottom: 12px;
+}
+.au-return p { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.au-return-options {
+  display: flex; flex: none; padding: 3px; gap: 2px; margin: 0;
+  border: 1px solid var(--line); border-radius: 9px; background: #eef1ec;
+}
+.au-return-options label { position: relative; display: grid; cursor: pointer; }
+.au-return-options input, .visually-hidden {
+  position: absolute; width: 1px; height: 1px; clip-path: inset(50%); overflow: hidden; white-space: nowrap;
+}
+.au-return-options span { padding: 4px 11px; border-radius: 6px; color: var(--muted); }
+.au-return-options input:checked + span {
+  background: var(--surface); color: var(--accent); font-weight: 600;
+  box-shadow: 0 1px 2px #1e38252a;
+}
+.au-return-options input:focus-visible + span { outline: 2px solid #61856f; }
+.au-surface { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+.au-timing {
+  grid-area: timing;
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px;
+  padding: 8px 12px;
+}
+.au-timing label { display: grid; grid-template-columns: auto minmax(36px, 1fr) auto; align-items: center; gap: 8px; }
+.au-timing input { width: 100%; margin: 0; accent-color: var(--accent); }
+.au-timing output { font-variant-numeric: tabular-nums; min-width: 3.6em; text-align: right; }
+.au-general { max-width: 560px; margin: 0 auto; }
+.au-general h1 { margin: 0 0 10px; }
+.au-general h1:not(:first-child) { margin-top: 18px; }
+.au-row {
+  min-height: 53px; gap: 10px 16px; padding: 9px 13px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.au-row + .au-row { border-top: 1px solid var(--line); }
+.au-row .au-select { min-width: 132px; max-width: 100%; }
+.au-row small { display: block; color: var(--muted); margin-top: 2px; }
+.au-actions { display: flex; align-items: center; gap: 7px; margin-left: auto; }
+.au-footer small { color: var(--muted); }
+.au-about { display: flex; align-items: center; gap: 5px; }
+.au-about button { font-size: 12px; padding-inline: 6px; }
+.au-notices {
+  width: min(540px, calc(100% - 26px)); max-height: calc(100% - 26px); padding: 0;
+  background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: 10px;
+}
+.au-notices::backdrop { background: #24382755; }
+.au-notices header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 14px; border-bottom: 1px solid var(--line);
+}
+.au-notices pre {
+  max-height: min(350px, calc(100vh - 100px)); overflow: auto; white-space: pre-wrap;
+  margin: 0; padding: 12px 14px; font: 12px/1.55 var(--sans);
+}
+.au-save { background: var(--accent); color: white; border-color: var(--accent); min-width: 68px; }
+.au-save:hover { background: #254737; color: white; }
+
+/* The Feel bench uses the system font. Charts and export stay in a disclosure. */
+#rig-card {
+  --fl-sans: var(--sans); --fl-text: var(--text); --fl-card: var(--surface); --fl-muted: var(--muted);
+  --fl-faint: var(--line); --fl-line: #b9c8ba; --fl-lit: #3d7859; --fl-band: #e1ebe3;
+  --fl-ghost: #6f7e75; --ff-fg: var(--text); --ff-hover: #edf2eb; --ff-active: var(--tint);
+  --ff-muted: var(--muted); --ff-faint: #7a877c; --ff-border: var(--line);
+  --ff-ring: #61856f; --ff-ring-soft: #dcebe1;
+  grid-template-columns: minmax(0, 1.12fr) minmax(0, 1fr);
+  grid-template-areas: "card margin" "timing timing" "details details"; gap: 10px; font-family: var(--sans);
+}
+#rig-card .fl-card, #rig-card .fl-margin {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+}
+#rig-card .fl-card { display: flex; flex-direction: column; align-self: stretch; gap: 8px; }
+.fl-card-head { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.fl-card-head h2 { font-size: 13px; }
+.au-try { min-height: 27px; padding: 1px 8px; border-color: var(--line); font-size: 12px; color: var(--accent); }
+#rig-card .fl-grid { display: block; min-height: 0; }
+#rig-card .fl-bench { display: block; min-height: 0; padding: 5px; border-radius: 8px; background: #eef2ec; }
+#rig-card .fl-stage { display: block; height: auto; place-items: stretch; }
+#rig-card .fl-hint { font: 12px/1.45 var(--sans); color: var(--muted); }
+.fc-screen {
+  width: 100%; height: 144px; position: relative; overflow: hidden; border-radius: 6px;
+  background: radial-gradient(circle at 1px 1px, #ccd8cd 1px, transparent 1.2px) 0 0 / 13px 13px, #f2f5f0;
+}
+.fc-app {
+  position: absolute; inset: 16% 13% 19%; display: grid; align-content: start; gap: 7px; padding: 13px;
+  border-radius: 8px; background: #ffffffc9; border: 1px solid #dae5db;
+  box-shadow: 0 5px 10px #243e260b;
+}
+.fc-app i { display: block; width: 82%; height: 5px; border-radius: 3px; background: #e4ebe3; }
+.fc-app i:first-child { height: 8px; width: 34%; background: #cddacd; }
+.fc-app i:last-child { width: 54%; }
+.fc-card {
+  position: absolute; inset: 8px auto auto 8px; width: 104px; height: 41px; margin: 0; padding: 0 10px;
+  display: flex; align-items: center; gap: 7px; border: 1px solid #283f33; border-radius: 8px;
+  background: #294335; color: #fff; font-size: 12px; font-weight: 600; cursor: grab; touch-action: none;
+  box-shadow: 0 5px 12px #29433540; white-space: nowrap;
+}
+.fc-card:active { cursor: grabbing; }
+.fc-card::before { content: ""; width: 7px; height: 7px; border: 1px solid #8fbd9f; background: #a3cdaf; border-radius: 50%; }
+#rig-card .fl-margin { gap: 8px; font-family: var(--sans); }
+#rig-card .fl-margin .fl-sec { gap: 5px; }
+#rig-card .fl-margin .fl-sec + .fl-sec { padding-top: 7px; }
+#rig-card .fl-label { font: 600 12px/1.4 var(--sans); text-transform: none; letter-spacing: 0; color: var(--text); }
+#rig-card .fl-chips { gap: 1px; margin: 0; }
+#rig-card .fl-chips .ff-item, #rig-card .fl-run .ff-item, #rig-card .fl-export .ff-item { min-height: 25px; padding: 0 5px; font: 12px var(--sans); }
+#rig-card .ff-item.is-on .ff-label { font-weight: 700; }
+#rig-card .ff-item.is-on { background: var(--tint); border-radius: 5px; }
+#rig-card .ff-input { padding: 2px 7px; min-height: 28px; border-radius: 6px; }
+#rig-card .ff-input input { font-size: 12px; }
+#rig-card .fl-words:empty { display: none; }
+#rig-card .fl-note { min-height: 16px; }
+#rig-card .fl-dials { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+#rig-card .ff-slider { height: 28px; gap: 3px; padding: 0 6px; border-radius: 6px; font-size: 11px; }
+#rig-card .fl-details { grid-area: details; border: 1px solid var(--line); border-radius: 9px; background: white; padding: 0 10px; }
+#rig-card .fl-details summary { cursor: pointer; padding: 7px 2px; color: var(--muted); }
+#rig-card .fl-plots { grid-template: none / repeat(3, minmax(0, 1fr)); gap: 6px; }
+#rig-card .fl-plot { min-height: 102px; }
+#rig-card .fl-plot-label { font: 10px/1.15 var(--sans); }
+#rig-card .fl-foot { padding: 10px 0 0; gap: 12px; grid-template-columns: minmax(0, .9fr) minmax(0, 1.3fr); }
+#rig-card .fl-metrics { font: 11px/1.5 var(--sans); gap: 3px 6px; }
+#rig-card .fl-keys, #rig-card .fl-run { margin: 8px 0; }
+#rig-card .fl-keys { flex-direction: row; flex-wrap: wrap; gap: 3px; }
+#rig-card .fl-keys .ff-item { font: 11px var(--sans); gap: 5px; padding: 0 5px; }
+#rig-card .fl-status { font: 11px/1.5 var(--sans); color: var(--muted); padding: 7px 0; }
+@media (max-width: 640px) {
+  #rig-card .fl-dials { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 500px) {
+  main, .au-header, .au-footer { padding-inline: 12px; }
+  #rig-card { grid-template-columns: minmax(0, 1fr); grid-template-areas: "card" "margin" "timing" "details"; }
+  #rig-card .fl-dials { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #rig-card .fl-plots, #rig-card .fl-foot, .au-timing { grid-template-columns: minmax(0, 1fr); }
+  .au-return { flex-wrap: wrap; }
+  .au-language > span, .au-footer small { display: none; }
+}
+</style>
+</head>
+<body>
+<header class="au-header">
+  <div class="au-tabs" role="tablist" data-aria="Settings">
+    <button class="au-tab" id="motion-tab" type="button" role="tab" aria-controls="motion-panel" aria-selected="true" data-text="Motion"></button>
+    <button class="au-tab" id="general-tab" type="button" role="tab" aria-controls="general-panel" aria-selected="false" tabindex="-1" data-text="General"></button>
+  </div>
+  <label class="au-language" for="language">
+    <span data-text="Language"></span>
+    <select class="au-select" id="language" data-aria="Language">
+      <option value="0">简体中文</option>
+      <option value="1">English</option>
+    </select>
+  </label>
+</header>
+<main>
+  <section id="motion-panel" role="tabpanel" aria-labelledby="motion-tab">
+    <div class="au-return">
+      <div><h1 data-text="Return style"></h1><p id="return-description"></p></div>
+      <fieldset class="au-return-options" aria-describedby="return-description">
+        <legend class="visually-hidden" data-text="Return style"></legend>
+        <label><input id="return-elastic" name="return-style" type="radio" value="0"><span data-text="Elastic"></span></label>
+        <label><input id="return-simple" name="return-style" type="radio" value="1"><span data-text="Simple"></span></label>
+      </fieldset>
+    </div>
+    <div id="rig-card">
+      <div class="fc-screen" id="screen">
+        <div class="fc-app" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+        <button class="fc-card" id="pip" type="button" data-text="Preview card"></button>
+      </div>
+    </div>
+    <div class="au-timing au-surface">
+      <label><span data-text="Wheel step"></span><input id="wheel-step" type="range" min="12" max="64" step="1"><output for="wheel-step"></output></label>
+      <label><span data-text="Hold time"></span><input id="return-hold" type="range" min="0" max="3000" step="1"><output for="return-hold"></output></label>
+    </div>
+  </section>
+  <section id="general-panel" class="au-general" role="tabpanel" aria-labelledby="general-tab" hidden>
+    <h1 data-text="Taskbar"></h1>
+    <div class="au-surface">
+      <div class="au-row">
+        <div><label for="wheel-direction" data-text="Wheel direction"></label><small data-text="Drag direction follows your pointer."></small></div>
+        <select class="au-select" id="wheel-direction">
+          <option value="0" data-text="Horizontal"></option><option value="1" data-text="Vertical"></option>
+        </select>
+      </div>
+      <div class="au-row">
+        <label for="taskbar-ink" data-text="Taskbar text"></label>
+        <select class="au-select" id="taskbar-ink">
+          <option value="3" data-text="Automatic contrast"></option><option value="0" data-text="Follow system"></option>
+          <option value="1" data-text="White text"></option><option value="2" data-text="Black text"></option>
+        </select>
+      </div>
+    </div>
+    <h1 data-text="Controls"></h1>
+    <div class="au-surface">
+      <div class="au-row">
+        <span id="shortcut-label" data-text="Toggle shortcut"></span>
+        <button class="au-key" id="shortcut" aria-labelledby="shortcut-label shortcut-change" type="button"><kbd id="shortcut-key"></kbd><span id="shortcut-change" data-text="Change"></span></button>
+      </div>
+      <div class="au-row">
+        <span data-text="Icon positions"></span>
+        <button class="au-reset" id="reset-icons" type="button" {{RESET_DISABLED}} data-text="Reset positions"></button>
+      </div>
+    </div>
+  </section>
+</main>
+<footer class="au-footer">
+  <div class="au-about">
+    <small>v{{VERSION}}</small>
+    <button class="au-button" id="open-notices" type="button" data-text="Third-party licenses"></button>
+  </div>
+  <div class="au-actions">
+    <button class="au-button" id="cancel" type="button" data-text="Cancel"></button>
+    <button class="au-button au-save" id="save" type="button" data-text="Save"></button>
+  </div>
+</footer>
+<dialog class="au-notices" id="notices" aria-labelledby="notices-title">
+  <header>
+    <h2 id="notices-title" data-text="Third-party licenses"></h2>
+    <form method="dialog"><button class="au-button" type="submit" data-text="Close" autofocus></button></form>
+  </header>
+  <pre tabindex="0">{{NOTICES}}</pre>
+</dialog>
+<script>{{FEEL_JS}}</script>
+<script>{{RIG_JS}}</script>
+<script>
+const initialMotion = [{{MOTION_SETTINGS}}];
+const verticalDirection = {{VERTICAL_DIRECTION}};
+{{PREVIEW_JS}}
+</script>
+</body>
+</html>

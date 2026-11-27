@@ -1,0 +1,58 @@
+#pragma code_page(65001)
+#include <windows.h>
+#include <commctrl.h>
+#include "resource.h"
+#include "version.h"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION FULLWINTB_VERSION_FIELDS
+ PRODUCTVERSION FULLWINTB_VERSION_FIELDS
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+#ifdef _DEBUG
+ FILEFLAGS VS_FF_DEBUG
+#else
+ FILEFLAGS 0
+#endif
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "FullWinTB"
+            VALUE "FileVersion", FULLWINTB_VERSION
+            VALUE "InternalName", "FullWinTB"
+            VALUE "OriginalFilename", "FullWinTB.exe"
+            VALUE "ProductName", "FullWinTB"
+            VALUE "ProductVersion", FULLWINTB_VERSION
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END
+
+IDD_HOTKEY DIALOGEX 0, 0, 200, 78
+STYLE DS_MODALFRAME | DS_SETFONT | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "FullWinTB 快捷键"
+FONT 9, "Microsoft YaHei UI"
+BEGIN
+    LTEXT "在输入框中按下新的快捷键", IDC_HOTKEY_HINT, 10, 10, 180, 13
+    EDITTEXT IDC_CAPTURE, 10, 27, 180, 15, ES_READONLY | ES_AUTOHSCROLL
+    DEFPUSHBUTTON "确定", IDOK, 78, 55, 53, 14
+    PUSHBUTTON "取消", IDCANCEL, 137, 55, 53, 14
+END
+
+IDD_MOTION DIALOGEX 0, 0, 350, 270
+STYLE DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_CLIPCHILDREN
+CAPTION "FullWinTB · 设置"
+BEGIN
+END
+
+IDR_FEEL_PAGE RCDATA "feel/motion.html"
+IDR_FEEL_CSS RCDATA "feel/feel.css"
+IDR_FEEL_RUNTIME RCDATA "feel/feel.js"
+IDR_FEEL_RIG RCDATA "feel/rig.js"
+IDR_FEEL_PREVIEW RCDATA "feel/preview.js"

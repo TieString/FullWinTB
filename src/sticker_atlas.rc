@@ -1,0 +1,4 @@
+#include <windows.h>
+#include "resource.h"
+
+IDR_STICKER_ATLAS RCDATA "sticker_atlas.bin"

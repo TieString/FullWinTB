@@ -1,0 +1,9 @@
+/build/
+/build-out/
+/out/
+/dist/
+/portable*/
+/.vs/
+/CMakeUserPresets.json
+__pycache__/
+*.pyc

@@ -6,6 +6,10 @@
 
 <p align="center">FullWinTB 让 Windows 最大化窗口延伸到任务栏后面，让原生任务栏图标和系统托盘显示在窗口前面。</p>
 
+<p align="center">
+  <a href="https://github.com/TieString/FullWinTB/releases/latest/download/FullWinTB.exe"><kbd>下载 FullWinTB.exe</kbd></a>
+</p>
+
 ## 截图
 
 ![应用图标移到屏幕顶部，通知区用贴纸固定在底部](docs/media/taskbar-split.png)

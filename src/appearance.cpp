@@ -50,7 +50,7 @@ void SetMotionSettings(HWND host, const MotionSettings& settings) {
         PostMessageW(control, message, reinterpret_cast<WPARAM>(host), 0);
 }
 
-void Update(HWND host, bool enabled, Ink ink, LayerMode layer) {
+void Update(HWND host, bool enabled, Ink ink, LayerMode layer, Ink iconInk) {
     DWORD explorer = 0, taskbarProcess = 0;
     GetWindowThreadProcessId(GetShellWindow(), &explorer);
     const HWND tray = FindWindowW(L"Shell_TrayWnd", nullptr);
@@ -61,7 +61,8 @@ void Update(HWND host, bool enabled, Ink ink, LayerMode layer) {
     if (!message) return;
     const WPARAM owner = reinterpret_cast<WPARAM>(host);
     const LPARAM mode = enabled ? ((1 + static_cast<LPARAM>(ink)) |
-                                  (static_cast<LPARAM>(layer) << layerShift)) : 0;
+                                  (static_cast<LPARAM>(layer) << layerShift) |
+                                  (static_cast<LPARAM>(iconInk) << iconInkShift)) : 0;
     if (!SetPropW(host, requestedMode, reinterpret_cast<HANDLE>(mode + 1))) return;
     HWND control = FindWindowExW(HWND_MESSAGE, nullptr, controlClass, nullptr);
     if (control && GetWindowThreadProcessId(control, nullptr) == thread) {

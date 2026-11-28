@@ -1,16 +1,12 @@
 #include "ink_sampling.h"
 
-#include <algorithm>
-#include <array>
 #include <cstring>
 
 namespace fullwintb::appearance {
 namespace {
 
-constexpr int gridSide = 16;
-using PixelGrid = std::array<RGBQUAD, gridSide * gridSide>;
-
-bool ReadGrid(HDC screen, const RECT& bounds, PixelGrid& pixels) {
+bool ReadGrid(HDC screen, const RECT& bounds, TaskbarInkGrid& pixels) {
+    constexpr int gridSide = taskbarInkGridSide;
     const HDC memory = CreateCompatibleDC(screen);
     if (!memory) return false;
 
@@ -35,75 +31,95 @@ bool ReadGrid(HDC screen, const RECT& bounds, PixelGrid& pixels) {
     return read;
 }
 
+Ink ReadInk(HDC screen, const RECT& bounds, bool horizontal) {
+    TaskbarInkGrid pixels{};
+    return ReadGrid(screen, bounds, pixels) ? ClassifyTaskbarInk(pixels, horizontal) : Ink::system;
+}
+
+LONG Offset(HWND bar, const wchar_t* property) {
+    return static_cast<LONG>(reinterpret_cast<LONG_PTR>(GetPropW(bar, property)));
+}
+
 } // namespace
 
-bool AutomaticInk::Observe(unsigned brightness) {
-    Ink wanted = current_;
-    if (brightness <= 105) wanted = Ink::white;
-    else if (brightness >= 145) wanted = Ink::black;
-    else if (current_ == Ink::system) wanted = brightness < 125 ? Ink::white : Ink::black;
+Ink ClassifyTaskbarInk(const TaskbarInkGrid& pixels, bool horizontal) {
+    constexpr int gridSide = taskbarInkGridSide;
+    // Window borders can occupy the outermost rows. The middle of the
+    // strip contains the taskbar glyphs, including the ones we recolor.
+    constexpr std::array rows{1, 2, 3, gridSide - 4, gridSide - 3, gridSide - 2};
+    InkSamples samples;
+    for (const int row : rows) {
+        for (int column = 1; column < gridSide - 1; ++column) {
+            const int x = horizontal ? column : row;
+            const int y = horizontal ? row : column;
+            const auto& color = pixels[y * gridSide + x];
+            samples.Add((54u * color.rgbRed + 183u * color.rgbGreen + 19u * color.rgbBlue) >> 8);
+        }
+    }
+    return samples.Preferred();
+}
 
-    if (wanted == current_) {
+void InkSamples::Add(unsigned brightness) {
+    ++count_;
+    if (brightness <= 105) ++dark_;
+    else if (brightness >= 145) ++light_;
+}
+
+Ink InkSamples::Preferred() const {
+    // A median can jump across the entire grayscale on a mixed background.
+    // Require agreement across most of the strip before choosing a shade.
+    if (!count_) return Ink::system;
+    const unsigned minimum = count_ - count_ / 4;
+    if (dark_ >= minimum) return Ink::white;
+    if (light_ >= minimum) return Ink::black;
+    return Ink::system;
+}
+
+bool AutomaticInk::Observe(Ink wanted, ULONGLONG now) {
+    constexpr ULONGLONG stableFor = 100;
+    if (wanted == Ink::system || wanted == current_) {
         Pause();
         return false;
     }
     if (wanted != pending_) {
         pending_ = wanted;
+        pendingSince_ = now;
         return false;
     }
+    if (now - pendingSince_ < stableFor) return false;
     current_ = wanted;
     Pause();
     return true;
 }
 
-std::optional<unsigned> ReadTaskbarBrightness(HWND bar, const RECT& monitor, bool horizontal) {
-    RECT bounds{}, dock{}, notification{}, area{};
-    const HWND tray = FindWindowExW(bar, nullptr, L"TrayNotifyWnd", nullptr);
-    if (!tray || !GetWindowRect(bar, &bounds) || !ReadDockBounds(bar, dock) ||
-        !GetWindowRect(tray, &notification)) return std::nullopt;
-    const auto offset = static_cast<LONG>(reinterpret_cast<LONG_PTR>(GetPropW(bar, notificationOffsetProperty)));
-    const bool vertical = GetPropW(bar, dockHeightProperty) != nullptr;
-    if (vertical) {
-        notification.top = dock.top;
-        notification.bottom = dock.bottom;
-    }
-    OffsetRect(&notification, vertical ? 0 : offset, vertical ? offset : 0);
-    if (!IntersectRect(&area, &bounds, &notification) || !IntersectRect(&bounds, &area, &monitor))
-        return std::nullopt;
+TaskbarInkSample ReadTaskbarInk(HWND bar, const RECT& monitor, bool horizontal) {
+    TaskbarInkSample ink;
+    RECT bounds{}, dock{};
+    if (!GetWindowRect(bar, &bounds) || !ReadDockBounds(bar, dock) ||
+        !IntersectRect(&bounds, &bounds, &monitor)) return ink;
 
-    // Most of these positions fall between the clock, glyphs and badges.
-    constexpr std::array rowFractions{10, 25, 88};
-    constexpr int columns = 7;
-    std::array<unsigned, rowFractions.size() * columns> samples{};
-    std::size_t count = 0;
     const HDC screen = GetDC(nullptr);
-    if (!screen) return std::nullopt;
-    PixelGrid pixels{};
-    const bool hasGrid = ReadGrid(screen, bounds, pixels);
-    const LONG width = bounds.right - bounds.left;
-    const LONG height = bounds.bottom - bounds.top;
-    for (int row : rowFractions) {
-        for (int column = 1; column <= columns; ++column) {
-            const int across = column * 100 / (columns + 1);
-            const int x = horizontal ? across : row;
-            const int y = horizontal ? row : across;
-            RGBQUAD color{};
-            if (hasGrid) {
-                color = pixels[(y * gridSide / 100) * gridSide + x * gridSide / 100];
-            } else {
-                const COLORREF pixel = GetPixel(screen, bounds.left + width * x / 100,
-                                                 bounds.top + height * y / 100);
-                if (pixel == CLR_INVALID) continue;
-                color = RGBQUAD{GetBValue(pixel), GetGValue(pixel), GetRValue(pixel), 0};
-            }
-            samples[count++] = (54u * color.rgbRed + 183u * color.rgbGreen + 19u * color.rgbBlue) >> 8;
+    if (!screen) return ink;
+    RECT notification{};
+    if (const HWND tray = FindWindowExW(bar, nullptr, L"TrayNotifyWnd", nullptr);
+        tray && GetWindowRect(tray, &notification)) {
+        if (GetPropW(bar, dockHeightProperty)) {
+            notification.top = dock.top;
+            notification.bottom = dock.bottom;
         }
+        OffsetRect(&notification, Offset(bar, notificationOffsetX), Offset(bar, notificationOffsetY));
+        if (IntersectRect(&notification, &notification, &bounds))
+            ink.notification = ReadInk(screen, notification, horizontal);
+    }
+    const auto span = reinterpret_cast<UINT_PTR>(GetPropW(bar, appsInkSpanProperty));
+    if (horizontal && span) {
+        RECT apps{dock.left + LOWORD(span), dock.top, dock.left + HIWORD(span), dock.bottom};
+        OffsetRect(&apps, Offset(bar, appsOffsetX), Offset(bar, appsOffsetY));
+        if (IntersectRect(&apps, &apps, &bounds))
+            ink.apps = ReadInk(screen, apps, true);
     }
     ReleaseDC(nullptr, screen);
-    if (count < samples.size() / 2) return std::nullopt;
-    const auto median = samples.begin() + count / 2;
-    std::nth_element(samples.begin(), median, samples.begin() + count);
-    return *median;
+    return ink;
 }
 
 } // namespace fullwintb::appearance

@@ -1,5 +1,7 @@
 #pragma once
 
+#define IDI_FULLWINTB 100
+#define IDI_FULLWINTB_DISABLED 103
 #define IDD_HOTKEY 101
 #define IDC_CAPTURE 1001
 #define IDC_HOTKEY_HINT 1002

@@ -382,6 +382,7 @@ void Overlay::SetInk(appearance::Ink ink) {
     if (ink == ink_) return;
     ink_ = ink;
     autoInk_ = {};
+    autoAppsInk_ = {};
     if (Enabled()) {
         CancelInk();
         UpdateAppearance();
@@ -391,8 +392,9 @@ void Overlay::SetInk(appearance::Ink ink) {
 
 void Overlay::UpdateAppearance() {
     if (!Enabled() || !session_.Active() || primaryLayer_ == appearance::LayerMode::suspended) return;
-    const auto resolved = ink_ == appearance::Ink::automatic ? autoInk_.Current() : ink_;
-    appearance::Update(host_, true, resolved, primaryLayer_);
+    const bool automatic = ink_ == appearance::Ink::automatic;
+    appearance::Update(host_, true, automatic ? autoInk_.Current() : ink_, primaryLayer_,
+                       automatic ? autoAppsInk_.Current() : appearance::Ink::system);
 }
 
 void Overlay::SetPrimaryLayer(appearance::LayerMode mode) {
@@ -407,6 +409,7 @@ void Overlay::WakeInk() {
     if (!session_.Active() || ink_ != appearance::Ink::automatic || autoHide_ ||
         primaryLayer_ == appearance::LayerMode::covered) return;
     autoInk_.Pause();
+    autoAppsInk_.Pause();
     inkBurstUntil_ = GetTickCount64() + inkBurstDuration;
     QueueInk(inkFrameDelay);
 }
@@ -416,6 +419,7 @@ void Overlay::CancelInk() {
     inkDue_ = 0;
     inkBurstUntil_ = 0;
     autoInk_.Pause();
+    autoAppsInk_.Pause();
 }
 
 void Overlay::QueueInk(UINT delay) {
@@ -433,19 +437,18 @@ void Overlay::SampleInk() {
     const auto foregroundStyle = GetWindowLongPtrW(foreground, GWL_EXSTYLE);
     const bool standardSurface = VisibleTopLevel(foreground) &&
         (foreground == GetShellWindow() || !(foregroundStyle & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)));
-    std::optional<unsigned> brightness;
+    appearance::TaskbarInkSample ink;
     if (standardSurface && bar != bars_.end() && bar->window.Alive() && !bar->cover.hwnd && IsWindowVisible(primary) &&
         !InMenu(bar->window.thread) && !InMenu(GetWindowThreadProcessId(foreground, nullptr))) {
         const bool horizontal = bar->edge == Edge::top || bar->edge == Edge::bottom;
-        brightness = appearance::ReadTaskbarBrightness(primary, bar->display.rcMonitor, horizontal);
+        ink = appearance::ReadTaskbarInk(primary, bar->display.rcMonitor, horizontal);
     }
-    if (!brightness) autoInk_.Pause();
-    else if (autoInk_.Observe(*brightness)) {
-        inkBurstUntil_ = 0;
-        UpdateAppearance();
-    }
+    const ULONGLONG now = GetTickCount64();
+    const bool notificationChanged = autoInk_.Observe(ink.notification, now);
+    const bool appsChanged = autoAppsInk_.Observe(ink.apps, now);
+    if (notificationChanged || appsChanged) UpdateAppearance();
     // The first reading can still be from the previous compositor frame.
-    const bool settling = autoInk_.Settling() || GetTickCount64() < inkBurstUntil_;
+    const bool settling = autoInk_.Settling() || autoAppsInk_.Settling() || now < inkBurstUntil_;
     QueueInk(settling ? inkFrameDelay : inkIdleDelay);
 }
 

@@ -1,12 +1,14 @@
 #include "../src/desktop_session.h"
 #include "../src/geometry.h"
 #include "../src/ink_sampling.h"
+#include "../src/icon_ink.h"
 #include "../src/icon_trail.h"
 #include "../src/resource.h"
 #include "../src/sticker_atlas.h"
 #include "../src/taskbar_motion.h"
 #include "../src/taskbar_layer.h"
 #include "../src/taskbar_region.h"
+#include <array>
 #include <cstdio>
 #include <cstring>
 
@@ -117,13 +119,74 @@ bool VisibleCanvasRoundTrip() {
     return passed;
 }
 
+bool HorizontalClipRoundTrip() {
+    using namespace appearance;
+    const HINSTANCE module = GetModuleHandleW(nullptr);
+    WNDCLASSW spec{};
+    spec.hInstance = module;
+    spec.lpfnWndProc = DefWindowProcW;
+    spec.lpszClassName = L"Shell_TrayWnd";
+    if (!RegisterClassW(&spec)) return false;
+
+    const HWND bar = CreateWindowExW(0, spec.lpszClassName, nullptr, WS_POPUP,
+                                     60, 100, 400, 44, nullptr, nullptr, module, nullptr);
+    const HRGN native = CreateRectRgn(111, 2, 169, 42);
+    const HRGN part = CreateRectRgn(287, 2, 399, 42);
+    const HRGN initial = CreateRectRgn(0, 0, 0, 0);
+    const HRGN actual = CreateRectRgn(0, 0, 0, 0);
+    const bool nativeInstalled = bar && native && part && initial && actual &&
+        CombineRgn(native, native, part, RGN_OR) != ERROR &&
+        SetRectRgn(part, 135, 7, 143, 38) &&
+        CombineRgn(native, native, part, RGN_DIFF) != ERROR &&
+        CombineRgn(initial, native, nullptr, RGN_COPY) != ERROR &&
+        SetWindowRgn(bar, native, FALSE);
+    bool passed = false;
+    if (nativeInstalled) {
+        TaskbarLayout layout{};
+        layout.bar = bar;
+        layout.bounds = layout.dock = {60, 100, 460, 144};
+        layout.startButton = {170, 100, 230, 144};
+        layout.buttons.push_back(layout.startButton);
+        layout.notification = {345, 100, 460, 144};
+
+        TaskbarRegion region;
+        region.Update(layout, {}, true);
+        const bool movedLeft = region.Place(layout, {{-60, 0}, {-28, 0}}, true) && region.FinishMotion() &&
+            GetWindowRgn(bar, actual) != ERROR && PtInRegion(actual, 57, 22) && !PtInRegion(actual, 80, 22) &&
+            !PtInRegion(actual, 125, 22) && PtInRegion(actual, 263, 22) && !PtInRegion(actual, 380, 22) &&
+            !PtInRegion(actual, 57, 1);
+        const bool movedRight = region.Place(layout, {{60, 0}, {}}, true) && region.FinishMotion() &&
+            GetWindowRgn(bar, actual) != ERROR && PtInRegion(actual, 180, 22) && !PtInRegion(actual, 198, 22) &&
+            !PtInRegion(actual, 125, 22) && PtInRegion(actual, 380, 22);
+        layout.bounds.top = 0;
+        const bool movedDiagonally = SetWindowPos(bar, nullptr, 60, 0, 400, 144, SWP_NOZORDER | SWP_NOACTIVATE) &&
+            region.Rebase(layout, {{60, 0}, {}}) &&
+            region.Place(layout, {{-60, -60}, {-28, 0}}, true) && region.FinishMotion() &&
+            GetWindowRgn(bar, actual) != ERROR && PtInRegion(actual, 57, 62) && !PtInRegion(actual, 80, 62) &&
+            !PtInRegion(actual, 57, 122) && PtInRegion(actual, 263, 122);
+        region.Reset();
+        const bool restored = GetWindowRgn(bar, actual) != ERROR && EqualRgn(initial, actual);
+        if (!movedLeft || !movedRight || !movedDiagonally || !restored)
+            std::fprintf(stderr, "moving clip: left=%d right=%d diagonal=%d restored=%d\n",
+                         movedLeft, movedRight, movedDiagonally, restored);
+        passed = movedLeft && movedRight && movedDiagonally && restored;
+    }
+    if (!nativeInstalled && native) DeleteObject(native);
+    if (part) DeleteObject(part);
+    if (initial) DeleteObject(initial);
+    if (actual) DeleteObject(actual);
+    if (bar) DestroyWindow(bar);
+    UnregisterClassW(spec.lpszClassName, module);
+    return passed;
+}
+
 DWORD WINAPI IsolatedCanvasThread(void* desktop) {
     if (!SetThreadDesktop(static_cast<HDESK>(desktop))) {
         const DWORD error = GetLastError();
         std::fprintf(stderr, "isolated test could not attach to its desktop: %lu\n", error);
         return error == ERROR_ACCESS_DENIED ? 77 : 1;
     }
-    return VisibleCanvasRoundTrip() ? 0 : 1;
+    return VisibleCanvasRoundTrip() && HorizontalClipRoundTrip() ? 0 : 1;
 }
 
 int IsolatedCanvasRoundTrip() {
@@ -219,16 +282,87 @@ int main(int argc, char** argv) {
 
     appearance::AutomaticInk ink;
     using appearance::Ink;
-    check(!ink.Observe(239) && ink.Settling(), "a single bright sample waits");
-    check(ink.Observe(232) && ink.Current() == Ink::black, "light backgrounds select black ink");
-    check(!ink.Observe(28) && !ink.Observe(132) && !ink.Settling(), "a single dark frame is ignored");
-    check(!ink.Observe(32) && ink.Observe(33) && ink.Current() == Ink::white,
-          "a settled dark background selects white ink");
-    check(!ink.Observe(125) && ink.Current() == Ink::white, "the middle range preserves white ink");
-    check(!ink.Observe(233) && ink.Settling(), "light recovery waits for a second frame");
+    const auto backgroundInk = [](unsigned dark, unsigned light, unsigned neutral = 0) {
+        appearance::InkSamples samples;
+        for (unsigned i = 0; i < dark; ++i) samples.Add(28);
+        for (unsigned i = 0; i < light; ++i) samples.Add(223);
+        for (unsigned i = 0; i < neutral; ++i) samples.Add(125);
+        return samples.Preferred();
+    };
+    const auto bright = backgroundInk(5, 48, 3);
+    const auto dark = backgroundInk(49, 7);
+    const auto mixedBright = backgroundInk(24, 32);
+    const auto mixedDark = backgroundInk(32, 24);
+    check(bright == Ink::black && dark == Ink::white, "mostly bright and dark strips select opposite ink");
+    check(mixedBright == Ink::system && mixedDark == Ink::system, "a narrow majority cannot flip ink");
+    check(backgroundInk(0, 0, 56) == Ink::system && backgroundInk(0, 0) == Ink::system,
+          "neutral or unavailable samples cannot change ink");
+    check(!ink.Observe(bright, 0) && ink.Settling(), "a single bright sample waits");
+    check(!ink.Observe(bright, 20) && ink.Current() == Ink::system, "two close samples do not establish stability");
+    check(ink.Observe(bright, 100) && ink.Current() == Ink::black, "stable light selects black ink");
+    for (ULONGLONG now = 200; now < 3000; now += 240) {
+        const auto mixed = now % 480 < 240 ? mixedBright : mixedDark;
+        check(!ink.Observe(mixed, now) && !ink.Settling() && ink.Current() == Ink::black,
+              "a moving boundary preserves the current ink");
+    }
+    check(!ink.Observe(dark, 3000) && !ink.Observe(mixedDark, 3050) && !ink.Settling(),
+          "an ambiguous reading cancels a transient dark candidate");
+    check(!ink.Observe(dark, 3100) && !ink.Observe(dark, 3199) && ink.Observe(dark, 3200) &&
+          ink.Current() == Ink::white, "stable dark selects white ink");
+    check(!ink.Observe(mixedBright, 3400) && ink.Current() == Ink::white, "mixed backgrounds also preserve white ink");
+    check(!ink.Observe(bright, 3500) && ink.Settling(), "light recovery waits for the new sample window");
     ink.Pause();
-    check(!ink.Observe(232) && ink.Observe(232) && ink.Current() == Ink::black,
-          "a pause discards the unconfirmed sample");
+    check(!ink.Observe(bright, 3650) && ink.Observe(bright, 3750) && ink.Current() == Ink::black,
+          "a pause restarts the confirmation time");
+
+    constexpr int inkGridSide = appearance::taskbarInkGridSide;
+    const RGBQUAD lightPage{245, 245, 245, 0};
+    const RGBQUAD darkEdge{57, 57, 57, 0};
+    for (const bool horizontal : {true, false}) {
+        appearance::TaskbarInkGrid grid;
+        const auto at = [&](int row, int column) -> RGBQUAD& {
+            return horizontal ? grid[row * inkGridSide + column] : grid[column * inkGridSide + row];
+        };
+        grid.fill(lightPage);
+        for (int column = 0; column < inkGridSide; ++column)
+            at(inkGridSide - 1, column) = darkEdge;
+        at(0, 3) = at(0, 7) = darkEdge;
+        at(1, 2) = at(1, 8) = darkEdge;
+        at(1, 11) = RGBQUAD{127, 127, 127, 0};
+        check(appearance::ClassifyTaskbarInk(grid, horizontal) == Ink::black,
+              "a dark window edge and sparse text on a bright page do not hold white ink");
+        for (auto& pixel : grid) {
+            pixel.rgbRed = pixel.rgbGreen = pixel.rgbBlue = static_cast<BYTE>(255 - pixel.rgbRed);
+        }
+        check(appearance::ClassifyTaskbarInk(grid, horizontal) == Ink::white,
+              "a light window edge does not hold black ink on a dark page");
+        for (const int boundary : {3, 12}) {
+            for (int row = 0; row < inkGridSide; ++row)
+                for (int column = 0; column < inkGridSide; ++column)
+                    at(row, column) = row < boundary ? lightPage : darkEdge;
+            check(appearance::ClassifyTaskbarInk(grid, horizontal) == Ink::system,
+                  "moving a wide brightness boundary keeps the selected ink");
+        }
+    }
+
+    using IconPixel = std::array<std::uint8_t, 4>;
+    std::array<std::uint8_t, 32 * 32 * 4> pixels{};
+    const auto fillGlyph = [&pixels](IconPixel color) {
+        for (int y = 5; y < 27; ++y)
+            for (int x = 5; x < 27; ++x)
+                std::copy(color.begin(), color.end(), pixels.begin() + (y * 32 + x) * 4);
+    };
+    fillGlyph({245, 245, 245, 255});
+    std::copy_n(IconPixel{74, 74, 74, 79}.begin(), 4, pixels.begin());
+    check(appearance::ClassifyIconInk(pixels) == Ink::white, "a white glyph can have premultiplied edges");
+    fillGlyph({16, 16, 16, 255});
+    check(appearance::ClassifyIconInk(pixels) == Ink::black, "detect a near-black glyph");
+    std::copy_n(IconPixel{255, 255, 255, 255}.begin(), 4, pixels.begin());
+    check(appearance::ClassifyIconInk(pixels) == Ink::system, "preserve two-tone icons");
+    std::copy_n(IconPixel{69, 24, 16, 80}.begin(), 4, pixels.begin());
+    check(appearance::ClassifyIconInk(pixels) == Ink::system, "preserve a translucent accent on an icon");
+    pixels.fill(255);
+    check(appearance::ClassifyIconInk(pixels) == Ink::system, "preserve opaque app tiles");
 
     using appearance::IconOffset;
     appearance::IconMotion motion;

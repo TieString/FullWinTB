@@ -15,6 +15,7 @@
 #include <winrt/Windows.UI.Xaml.Input.h>
 #include <winrt/Windows.UI.Xaml.Media.h>
 #include <winrt/Windows.UI.Xaml.Shapes.h>
+#include "taskbar_icon_ink.h"
 #include "taskbar_overflow.h"
 #include "taskbar_pin_input.h"
 #include "taskbar_preview.h"
@@ -251,6 +252,7 @@ struct AppearanceState {
     ULONGLONG pinRecoveryAt = 0;
     appearance::TaskbarLayout layout;
     winrt::event_token layoutChanged{};
+    appearance::TaskbarIconInk iconInk;
     fullwintb::appearance::TaskbarRegion region;
     fullwintb::appearance::TaskbarLayer layer;
     std::vector<Background> backgrounds;
@@ -387,14 +389,14 @@ void PublishOffsets(HWND bar, appearance::IconOffsets previous) {
     if (previous.apps != state.offsets.apps) {
         const auto next = state.offsets.apps;
         publish(appearance::appsOffsetProperty, next.y ? next.y : next.x);
-        publish(L"FullWinTB.AppsOffsetX", next.x);
-        publish(L"FullWinTB.AppsOffsetY", next.y);
+        publish(appearance::appsOffsetX, next.x);
+        publish(appearance::appsOffsetY, next.y);
     }
     if (previous.notification != state.offsets.notification) {
         const auto next = state.offsets.notification;
         publish(appearance::notificationOffsetProperty, next.y ? next.y : next.x);
-        publish(L"FullWinTB.NotificationOffsetX", next.x);
-        publish(L"FullWinTB.NotificationOffsetY", next.y);
+        publish(appearance::notificationOffsetX, next.x);
+        publish(appearance::notificationOffsetY, next.y);
     }
 }
 
@@ -1241,7 +1243,8 @@ void PauseLayout() {
 }
 
 void SetAppearance(bool enabled, appearance::Ink ink = appearance::Ink::system,
-                   appearance::LayerMode layer = appearance::LayerMode::native) {
+                   appearance::LayerMode layer = appearance::LayerMode::native,
+                   appearance::Ink iconInk = appearance::Ink::system) {
     const bool wasActive = state.enabled && !state.highContrast;
     const auto previousLayer = state.layerMode;
     if (enabled && layer == appearance::LayerMode::suspended && previousLayer != layer && !state.suspendedPins) {
@@ -1278,6 +1281,9 @@ void SetAppearance(bool enabled, appearance::Ink ink = appearance::Ink::system,
     }
 
     state.ink = ink;
+    const bool tintIcons = active && layer == appearance::LayerMode::floating;
+    state.iconInk.SetInk(tintIcons ? iconInk : appearance::Ink::system,
+                         tintIcons ? ink : appearance::Ink::system);
     const bool resuming = active && layer == appearance::LayerMode::floating && state.suspendedPins &&
                           previousLayer != layer;
     const bool pinsReady = resuming && PinsInPlace(primary, *state.suspendedPins);
@@ -1463,11 +1469,13 @@ LRESULT CALLBACK AppearanceProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
         // A posted color change can lag behind a synchronous disable.
         if (reinterpret_cast<LPARAM>(GetPropW(host, appearance::requestedMode)) != lp + 1) return 0;
         const LPARAM ink = lp & appearance::inkMask;
-        const auto layer = static_cast<appearance::LayerMode>(lp >> appearance::layerShift);
-        if (ink >= 1 && ink <= 3 && layer <= appearance::LayerMode::suspended && WatchHost(host)) {
+        const auto layer = static_cast<appearance::LayerMode>((lp >> appearance::layerShift) & appearance::inkMask);
+        const auto iconInk = static_cast<appearance::Ink>((lp >> appearance::iconInkShift) & appearance::inkMask);
+        if (ink >= 1 && ink <= 3 && layer <= appearance::LayerMode::suspended &&
+            iconInk <= appearance::Ink::black && WatchHost(host)) {
             ReadWheelAxis();
             ReadMotionSettings();
-            SetAppearance(true, static_cast<appearance::Ink>(ink - 1), layer);
+            SetAppearance(true, static_cast<appearance::Ink>(ink - 1), layer, iconInk);
             if (state.enabled) StartConnection();
         } else if (!lp && host == state.host) {
             SetAppearance(false);
@@ -1618,6 +1626,28 @@ xaml::FrameworkElement TaskbarFrame(const xaml::UIElement& window) {
     return nullptr;
 }
 
+bool IsTaskbarAppIcon(const xaml::Controls::Image& image) {
+    const auto panel = xaml::Media::VisualTreeHelper::GetParent(image).try_as<xaml::FrameworkElement>();
+    if (!panel || panel.Name() != L"IconPanel") return false;
+    const auto button = xaml::Media::VisualTreeHelper::GetParent(panel);
+    if (!button || winrt::get_class_name(button) != L"Taskbar.TaskListButton") return false;
+    const auto frame = TaskbarFrame(image);
+    return frame && winrt::get_class_name(frame) == L"Taskbar.TaskbarFrame";
+}
+
+bool IsNotificationAreaIcon(const xaml::Controls::Image& image) {
+    const auto grid = xaml::Media::VisualTreeHelper::GetParent(image);
+    if (!grid) return false;
+    auto ancestor = xaml::Media::VisualTreeHelper::GetParent(grid);
+    if (!ancestor || winrt::get_class_name(ancestor) != L"SystemTray.ImageIconContent") return false;
+    // The overflow flyout also contains tray icons, but has its own background.
+    while (ancestor) {
+        if (winrt::get_class_name(ancestor) == L"SystemTray.NotificationAreaIcons") return true;
+        ancestor = xaml::Media::VisualTreeHelper::GetParent(ancestor);
+    }
+    return false;
+}
+
 struct VisualObserver : winrt::implements<VisualObserver, IVisualTreeServiceCallback2, winrt::non_agile> {
     explicit VisualObserver(winrt::com_ptr<IXamlDiagnostics> diagnostics)
         : diagnostics_(std::move(diagnostics)) {}
@@ -1635,6 +1665,19 @@ struct VisualObserver : winrt::implements<VisualObserver, IVisualTreeServiceCall
             appearance::RemoveThumbnailFlyout(element.Handle);
         }
         if (GetCurrentThreadId() != GetWindowThreadProcessId(state.control, nullptr)) return S_OK;
+        if (mutation == Add && type == L"Windows.UI.Xaml.Controls.Image") {
+            winrt::com_ptr<::IInspectable> inspectable;
+            if (SUCCEEDED(diagnostics_->GetIInspectableFromHandle(element.Handle, inspectable.put()))) {
+                if (const auto image = inspectable.try_as<xaml::Controls::Image>()) {
+                    if (element.Name && std::wstring_view(element.Name) == L"Icon" && IsTaskbarAppIcon(image))
+                        state.iconInk.Track(element.Handle, appearance::IconGroup::apps, image);
+                    else if (IsNotificationAreaIcon(image))
+                        state.iconInk.Track(element.Handle, appearance::IconGroup::notification, image);
+                }
+            }
+        } else if (mutation == Remove) {
+            state.iconInk.Forget(element.Handle);
+        }
         if (mutation == Add && element.Name && std::wstring_view(element.Name) == L"OverflowRootGrid") {
             winrt::com_ptr<::IInspectable> inspectable;
             if (SUCCEEDED(diagnostics_->GetIInspectableFromHandle(element.Handle, inspectable.put()))) {

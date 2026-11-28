@@ -20,6 +20,7 @@ public:
     void Stop();
     void Recreate();
     void SetEnabled(bool enabled);
+    void SetWindowIcon(HWND window) const;
     static bool EnableOnLaunch();
     void SaveEnabled() const;
     void SetInk(appearance::Ink ink);

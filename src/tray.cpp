@@ -32,38 +32,6 @@ bool SaveOption(const wchar_t* setting, DWORD value) {
     return RegSetKeyValueW(HKEY_CURRENT_USER, settingsKey, setting, REG_DWORD, &value, sizeof(value)) == ERROR_SUCCESS;
 }
 
-HICON CircleIcon(DWORD rgb) {
-    constexpr int size = 16;
-    BITMAPINFO info{};
-    info.bmiHeader.biSize = sizeof(info.bmiHeader);
-    info.bmiHeader.biWidth = size;
-    info.bmiHeader.biHeight = -size;
-    info.bmiHeader.biPlanes = 1;
-    info.bmiHeader.biBitCount = 32;
-    void* bits = nullptr;
-    HBITMAP color = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
-    if (!color) return nullptr;
-
-    constexpr WORD emptyMask[size]{};
-    HBITMAP mask = CreateBitmap(size, size, 1, 1, emptyMask);
-    HICON icon = nullptr;
-    if (mask) {
-        auto* pixels = static_cast<DWORD*>(bits);
-        for (int y = 0; y < size; ++y) {
-            for (int x = 0; x < size; ++x) {
-                const int dx = 2 * x - size + 1;
-                const int dy = 2 * y - size + 1;
-                pixels[y * size + x] = (dx * dx + dy * dy <= 13 * 13) ? (0xff000000 | rgb) : 0;
-            }
-        }
-        ICONINFO iconInfo{TRUE, 0, 0, mask, color};
-        icon = CreateIconIndirect(&iconInfo);
-        DeleteObject(mask);
-    }
-    DeleteObject(color);
-    return icon;
-}
-
 } // namespace
 
 void Tray::Start(HWND owner) {
@@ -81,8 +49,14 @@ void Tray::Start(HWND owner) {
         motion_ = appearance::UnpackMotionSettings(motion);
     if (IsSecondOption(L"ReturnStyle")) returnStyle_ = appearance::ReturnStyle::simple;
     if (IsSecondOption(L"Language")) language_ = UiLanguage::english;
-    enabledIcon_ = CircleIcon(0x50c850);
-    disabledIcon_ = CircleIcon(0x6482c8);
+    const HMODULE module = GetModuleHandleW(nullptr);
+    const UINT dpi = GetDpiForWindow(owner);
+    const int iconWidth = GetSystemMetricsForDpi(SM_CXSMICON, dpi);
+    const int iconHeight = GetSystemMetricsForDpi(SM_CYSMICON, dpi);
+    enabledIcon_ = static_cast<HICON>(LoadImageW(module, MAKEINTRESOURCEW(IDI_FULLWINTB),
+                                                IMAGE_ICON, iconWidth, iconHeight, LR_DEFAULTCOLOR));
+    disabledIcon_ = static_cast<HICON>(LoadImageW(module, MAKEINTRESOURCEW(IDI_FULLWINTB_DISABLED),
+                                                 IMAGE_ICON, iconWidth, iconHeight, LR_DEFAULTCOLOR));
     icon_.cbSize = sizeof(icon_);
     icon_.hWnd = owner;
     icon_.uID = 1;
@@ -123,6 +97,11 @@ void Tray::SetEnabled(bool enabled) {
     enabled_ = enabled;
     UpdateTip();
     Shell_NotifyIconW(NIM_MODIFY, &icon_);
+}
+
+void Tray::SetWindowIcon(HWND window) const {
+    if (enabledIcon_)
+        SendMessageW(window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(enabledIcon_));
 }
 
 bool Tray::EnableOnLaunch() {
@@ -245,6 +224,7 @@ INT_PTR CALLBACK Tray::HotkeyDialog(HWND dialog, UINT msg, WPARAM wp, LPARAM lp)
     if (msg == WM_INITDIALOG) {
         auto& edit = *reinterpret_cast<HotkeyEdit*>(lp);
         SetWindowLongPtrW(dialog, DWLP_USER, lp);
+        edit.tray.SetWindowIcon(dialog);
         SetWindowTextW(dialog, Localized(edit.language, L"FullWinTB 快捷键", L"FullWinTB Shortcut"));
         SetDlgItemTextW(dialog, IDC_HOTKEY_HINT,
                         Localized(edit.language, L"在输入框中按下新的快捷键", L"Press the new shortcut in the field."));

@@ -17,7 +17,7 @@ namespace {
 
 namespace xaml = winrt::Windows::UI::Xaml;
 constexpr UINT updatePreview = WM_APP + 1;
-constexpr wchar_t previewClass[] = L"FullWinTB.ThumbnailPosition.v" FULLWINTB_VERSION_WIDE;
+constexpr wchar_t previewClass[] = L"FullWinTB.ThumbnailPosition.v" FULLWINTB_APPEARANCE_VERSION_WIDE;
 constexpr wchar_t surfaceProperty[] = L"FullWinTB.ThumbnailSurface";
 constexpr wchar_t islandClass[] = L"XamlExplorerHostIslandWindow";
 constexpr wchar_t legacyClass[] = L"TaskListThumbnailWnd";

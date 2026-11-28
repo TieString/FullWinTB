@@ -360,6 +360,7 @@ INT_PTR CALLBACK DialogProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
         SetWindowLongPtrW(window, DWLP_USER, lp);
         view->UpdateTitle();
         SizeToMonitor(window);
+        view->tray.SetWindowIcon(window);
         view->Start();
         return TRUE;
     }

@@ -11,7 +11,7 @@
 namespace fullwintb::appearance {
 namespace {
 
-constexpr wchar_t latchClass[] = L"FullWinTB.IconLatch.v" FULLWINTB_VERSION_WIDE;
+constexpr wchar_t latchClass[] = L"FullWinTB.IconLatch.v" FULLWINTB_APPEARANCE_VERSION_WIDE;
 constexpr int latchHeight = 12;
 constexpr int cornerWidth = 66;
 constexpr int cornerHeight = 50;

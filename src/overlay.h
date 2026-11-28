@@ -92,6 +92,7 @@ private:
     appearance::LayerMode primaryLayer_ = appearance::LayerMode::native;
     appearance::Ink ink_ = appearance::Ink::automatic;
     appearance::AutomaticInk autoInk_;
+    appearance::AutomaticInk autoAppsInk_;
     DesktopSession session_;
     ULONGLONG inkDue_ = 0;
     ULONGLONG inkBurstUntil_ = 0;

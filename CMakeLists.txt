@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.25)
 set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
-project(FullWinTB VERSION 0.1.0 LANGUAGES CXX RC)
+project(FullWinTB VERSION 0.1.3 LANGUAGES CXX RC)
+# Use the existing Explorer component for updates confined to the EXE.
+set(FULLWINTB_APPEARANCE_VERSION 0.1.3)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -33,7 +35,8 @@ endfunction()
 
 add_library(FullWinTBAppearance SHARED src/taskbar_appearance.cpp src/taskbar_region.cpp
     src/taskbar_layout.cpp src/taskbar_layer.cpp src/taskbar_latch.cpp src/taskbar_preview.cpp
-    src/taskbar_overflow.cpp src/taskbar_wave.cpp src/taskbar_start.cpp src/taskbar_pin_input.cpp src/sticker_atlas.rc)
+    src/taskbar_overflow.cpp src/taskbar_wave.cpp src/taskbar_start.cpp src/taskbar_pin_input.cpp
+    src/taskbar_icon_ink.cpp src/sticker_atlas.rc)
 set_source_files_properties(src/sticker_atlas.rc PROPERTIES OBJECT_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/sticker_atlas.bin")
 fullwintb_native(FullWinTBAppearance)
@@ -69,6 +72,9 @@ target_link_libraries(FullWinTB PRIVATE user32 gdi32 shell32 shlwapi advapi32 co
     "${webview2_native}/${webview2_arch}/WebView2LoaderStatic.lib")
 set_source_files_properties(src/fullwintb.rc PROPERTIES OBJECT_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/feel/motion.html;${CMAKE_CURRENT_SOURCE_DIR}/src/feel/feel.css;${CMAKE_CURRENT_SOURCE_DIR}/src/feel/feel.js;${CMAKE_CURRENT_SOURCE_DIR}/src/feel/rig.js;${CMAKE_CURRENT_SOURCE_DIR}/src/feel/preview.js")
+set_property(SOURCE src/fullwintb.rc APPEND PROPERTY OBJECT_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/docs/media/FullWinTB.ico"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/fullwintb_disabled.ico")
 if(MINGW)
     target_link_options(FullWinTB PRIVATE -municode)
 endif()

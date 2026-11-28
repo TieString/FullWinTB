@@ -59,29 +59,33 @@ RECT StripAt(const TaskbarLayout& layout, Span span, IconOffset offset) {
     return strip;
 }
 
-Region BuildRegion(const TaskbarLayout& layout, IconOffsets offsets, HRGN nativeClip,
-                   IconSlices slices = {}, bool strictHorizontalClip = false) {
+void PublishAppsInkSpan(const TaskbarLayout& layout) {
+    const LONG left = layout.startButton.left - layout.dock.left;
+    const LONG right = layout.buttons.back().right - layout.dock.left;
+    if (left < 0 || right <= left || right > UINT16_MAX) {
+        RemovePropW(layout.bar, appsInkSpanProperty);
+        return;
+    }
+    const auto value = reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(MAKELONG(left, right)));
+    if (GetPropW(layout.bar, appsInkSpanProperty) != value)
+        SetPropW(layout.bar, appsInkSpanProperty, value);
+}
+
+Region BuildRegion(const TaskbarLayout& layout, IconOffsets offsets, HRGN nativeClip, IconSlices slices = {}) {
     auto region = EmptyRegion();
     auto part = EmptyRegion();
     if (!region || !part) return Region(nullptr, DeleteObject);
     const Groups groups = MeasureGroups(layout);
     const auto add = [&](LONG left, LONG right, IconOffset offset) {
         if (left >= right) return true;
-        auto rect = StripAt(layout, {left, right}, {offset.x, 0});
-        if (!IntersectRect(&rect, &rect, &layout.dock)) return false;
-        OffsetRect(&rect, -layout.dock.left, -layout.dock.top);
+        auto rect = StripAt(layout, {left, right}, offset);
+        if (!IntersectRect(&rect, &rect, &layout.bounds)) return false;
+        OffsetRect(&rect, -layout.dock.left - offset.x, -layout.dock.top - offset.y);
         if (!SetRectRgn(part.get(), rect.left, rect.top, rect.right, rect.bottom)) return false;
-        // The native clip is expressed in dock coordinates, even for a tray
-        // with one row lifted into the larger viewport and one at the dock.
-        if (nativeClip) {
-            const int kind = CombineRgn(part.get(), part.get(), nativeClip, RGN_AND);
-            if (kind == ERROR) return false;
-            if (strictHorizontalClip && offset.x && !offset.y) {
-                RECT clipped{};
-                if (kind != SIMPLEREGION || !GetRgnBox(part.get(), &clipped) || !SameRect(rect, clipped)) return false;
-            }
-        }
-        if (OffsetRgn(part.get(), layout.dock.left - layout.bounds.left,
+        // Intersect in the original dock coordinates so the native mask moves
+        // with each strip, including its clipped edges and holes.
+        if (nativeClip && CombineRgn(part.get(), part.get(), nativeClip, RGN_AND) == ERROR) return false;
+        if (OffsetRgn(part.get(), layout.dock.left - layout.bounds.left + offset.x,
                       layout.dock.top - layout.bounds.top + offset.y) == ERROR) return false;
         return CombineRgn(region.get(), region.get(), part.get(), RGN_OR) != ERROR;
     };
@@ -185,7 +189,7 @@ RECT TaskbarRegion::ReturnArea(const TaskbarLayout& layout, IconOffsets offsets,
 bool TaskbarRegion::Place(const TaskbarLayout& layout, IconOffsets offsets, bool animated, IconSlices slices) {
     if (layout.bar != bar_ || !SameRect(layout.bounds, bounds_) || !Fits(layout, offsets) || !OwnsCurrent())
         return false;
-    auto region = BuildRegion(layout, offsets, previous_, slices, true);
+    auto region = BuildRegion(layout, offsets, previous_, slices);
     if (!region) return false;
     if (animated) {
         // XAML can still display the previous frame until its transform is presented.
@@ -209,6 +213,7 @@ bool TaskbarRegion::Rebase(const TaskbarLayout& layout, IconOffsets offsets, Ico
     auto region = BuildRegion(layout, offsets, previous_, slices);
     if (!region || !ApplyRegion(bar_, region, applied_, true)) return false;
     bounds_ = layout.bounds;
+    PublishAppsInkSpan(layout);
     ClearPending();
     return true;
 }
@@ -250,6 +255,7 @@ bool TaskbarRegion::Update(const TaskbarLayout& layout, IconOffsets offsets, boo
     }
     auto region = BuildRegion(layout, offsets, previous_);
     if (!region) return false;
+    PublishAppsInkSpan(layout);
     if (SameRegion(region.get(), applied_)) {
         if (pending_) DeleteObject(pending_);
         pending_ = nullptr;
@@ -284,6 +290,7 @@ void TaskbarRegion::Reset() {
     }
     if (previous_) DeleteObject(previous_);
     if (applied_) DeleteObject(applied_);
+    if (bar_) RemovePropW(bar_, appsInkSpanProperty);
     ClearPending();
     bar_ = nullptr;
     previous_ = nullptr;

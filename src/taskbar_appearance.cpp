@@ -715,12 +715,15 @@ bool EnsureIconInput();
 bool WatchReturnPointer(POINT cursor, ULONGLONG now) {
     if (!AwaitingReturn() || state.layerMode != appearance::LayerMode::floating) return false;
     const auto appsArea = appearance::TaskbarRegion::ReturnArea(state.layout, state.offsets, appearance::IconGroup::apps);
-    const bool inApps = PtInRect(&appsArea, cursor) != FALSE;
+    const bool inApps = PtInRect(&appsArea, cursor) ||
+                        Latch(appearance::IconGroup::apps).ContainsPointer(cursor);
     const auto trayArea = appearance::TaskbarRegion::ReturnArea(state.layout, state.offsets,
                                                              appearance::IconGroup::notification);
     // While the tray holds the app strip to its left, returning the tray also
     // moves the apps. Keep the tray parked in either group's cleared area.
-    const bool inTray = PtInRect(&trayArea, cursor) || (inApps && AppsPushedByTray());
+    const bool inTray = PtInRect(&trayArea, cursor) ||
+                        Latch(appearance::IconGroup::notification).ContainsPointer(cursor) ||
+                        (inApps && AppsPushedByTray());
     const bool appsChanged = state.appsMotion.WatchReturn(now, state.motionProfile.hold, inApps);
     const bool trayChanged = state.notificationMotion.WatchReturn(now, state.motionProfile.hold, inTray);
     return appsChanged || trayChanged;
@@ -999,9 +1002,12 @@ void HandleLatch(appearance::IconGroup group, appearance::LatchGesture gesture, 
     const MotionAxis axis = direction.value_or(state.wheelAxis);
     switch (gesture) {
     case appearance::LatchGesture::toggle:
+        if (motion.Pinned()) {
+            Latch(group).PeelOff();
+            return;
+        }
         if (state.peeling == group) state.peeling.reset();
-        frame.stickerDismissed = motion.Pinned();
-        if (motion.Pinned()) anchorWave(frame.wave.Axis());
+        frame.stickerDismissed = false;
         motion.TogglePin(state.offsets.For(group));
         UpdateLatches();
         break;
@@ -1039,8 +1045,8 @@ void HandleLatch(appearance::IconGroup group, appearance::LatchGesture gesture, 
         ScheduleLayout();
         break;
     case appearance::LatchGesture::peelRemove:
-        if (state.peeling != group) return;
-        state.peeling.reset();
+        if (state.peeling == group) state.peeling.reset();
+        else if (!motion.Pinned()) return;
         frame.stickerDismissed = true;
         anchorWave(frame.wave.Axis());
         motion.Release();

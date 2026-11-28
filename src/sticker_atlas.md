@@ -1,6 +1,6 @@
 # Sticker artwork
 
-`sticker_atlas.bin` is the original v21.3 resource. It holds a 256-entry premultiplied BGRA palette followed by 13 row-major frames. Each frame is 112 × 64 and stores one palette index per pixel. Index 0 is transparent. The original baked shadow and translucent residue are part of the curl artwork.
+`sticker_atlas.bin` uses the v21.3 render settings with a straight lower paper edge. It holds a 256-entry premultiplied BGRA palette followed by 13 row-major frames. Each frame is 112 × 64 and stores one palette index per pixel. Index 0 is transparent. The baked shadow and translucent residue are part of the curl artwork.
 
 The source is `sticker_art.svg`. The frames were rendered with the official [Sticker Forge embed module](https://sticker.oooo.so/embed/sticker-forge.es.js), SHA-256 `9deb1c0121df803f5f34dda599a2871a539ac7c00eb843485851d5b739be8612`. See `sticker-forge-LICENSE.txt` for its MIT license.
 

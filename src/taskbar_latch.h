@@ -13,7 +13,9 @@ public:
               const RECT& anchor, UINT dpi, const RECT& monitor, bool corner, bool pinned);
     void Hide();
     void Destroy();
+    void PeelOff();
     void KeepAbove(HWND bar) const;
+    bool ContainsPointer(POINT pointer) const;
 
 private:
     static LRESULT CALLBACK Proc(HWND, UINT, WPARAM, LPARAM);
@@ -26,6 +28,7 @@ private:
     void RetargetPeel();
     void StepPeel();
     void StopPeel();
+    void FinishRemoval();
     void Send(LatchGesture gesture) const;
 
     HWND window_ = nullptr;
@@ -38,11 +41,12 @@ private:
     bool below_ = false;
     bool pinned_ = false;
     bool hot_ = false;
+    bool flattenUntilLeave_ = false;
     bool down_ = false;
     bool dragged_ = false;
+    bool removing_ = false;
     POINT peelStart_{};
     float peelPull_ = 0;
-    int peelSide_ = -1;
     double peel_ = 0;
     double peelVelocity_ = 0;
     ULONGLONG peelTick_ = 0;

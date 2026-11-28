@@ -16,6 +16,10 @@ constexpr int latchHeight = 12;
 constexpr int cornerWidth = 66;
 constexpr int cornerHeight = 50;
 constexpr UINT_PTR peelTimer = 1;
+constexpr double loosePeel = 0.60;
+constexpr double looseHoverPeel = 0.52;
+constexpr double pinnedHoverPeel = 0.38;
+constexpr float removalFadeSpan = 0.24f;
 const Spring peelSpring{1, 740, 0.82};
 
 bool PaperHit(float x, float y, float left, float top, float right, float bottom, float radius) {
@@ -84,13 +88,14 @@ struct StickerPose {
     float blend;
 };
 
-std::uint32_t StickerPixel(const StickerPose& sticker, float x, float y, bool hit, int side) {
-    const auto pixel = sticker.Pixel(side > 0 ? 1.0f - x : x, y);
+std::uint32_t StickerPixel(const StickerPose& sticker, float x, float y, bool hit) {
+    // Mirror the atlas so the same corner curls over the icon throughout the gesture.
+    const auto pixel = sticker.Pixel(1.0f - x, y);
     return (pixel & 0xff000000) ? pixel : (hit ? 0x01000000 : 0);
 }
 
 void Rasterize(std::uint32_t* bitmap, SIZE size, const std::uint8_t* atlas,
-               bool below, float peel, int side, bool corner) {
+               bool below, float peel, bool corner) {
     const StickerPose sticker(atlas, peel);
     for (LONG y = 0; y < size.cy; ++y) {
         const LONG row = below ? size.cy - 1 - y : y;
@@ -104,13 +109,13 @@ void Rasterize(std::uint32_t* bitmap, SIZE size, const std::uint8_t* atlas,
                 const float paperX = cosine * dx - sine * dy;
                 const float paperY = sine * dx + cosine * dy;
                 const bool hit = PaperHit(paperX, paperY, -22.0f, -10.0f, 22.0f, 5.0f, 4.0f);
-                *bitmap++ = StickerPixel(sticker, .5f + paperX / 64.0f, .5f + paperY / 36.0f, hit, side);
+                *bitmap++ = StickerPixel(sticker, .5f + paperX / 64.0f, .5f + paperY / 36.0f, hit);
             } else {
                 // Use the group edge if the shell has no hidden-icons arrow.
                 const float localX = ((x + .5f) / size.cx - .5f) * 26.0f;
                 const float localY = (row + 0.5f) * latchHeight / size.cy;
                 const bool hit = PaperHit(localX, localY, -11.9f, 0.45f, 11.9f, 11.55f, 2.7f);
-                *bitmap++ = StickerPixel(sticker, (x + .5f) / size.cx, (row + .5f) / size.cy, hit, side);
+                *bitmap++ = StickerPixel(sticker, (x + .5f) / size.cx, (row + .5f) / size.cy, hit);
             }
         }
     }
@@ -155,15 +160,17 @@ void IconLatch::Show(HINSTANCE module, HWND bar, HWND actions, IconGroup group,
         if (!window_) return;
     }
     if (visible_ && !IsWindowVisible(window_)) visible_ = false;
-    const bool rename = pinned != pinned_ || !visible_;
+    const bool pinChanged = pinned != pinned_;
+    const bool rename = pinChanged || !visible_;
     const bool newSurface = corner != corner_ || !visible_;
     const bool repaint = dpi != dpi_ || newSurface || below != below_ || rename;
     if (repaint) {
         dpi_ = dpi;
         corner_ = corner;
         below_ = below;
+        if (pinChanged) flattenUntilLeave_ = pinned && hot_;
         pinned_ = pinned;
-        if (newSurface) {
+        if (newSurface && !removing_) {
             StopPeel();
             peel_ = PeelTarget();
         }
@@ -185,19 +192,28 @@ void IconLatch::Show(HINSTANCE module, HWND bar, HWND actions, IconGroup group,
 
 void IconLatch::Hide() {
     StopPeel();
-    if (down_) {
+    if (down_ || removing_) {
         down_ = false;
+        removing_ = false;
         if (GetCapture() == window_) ReleaseCapture();
         Send(LatchGesture::peelEnd);
     }
     if (window_ && visible_) ShowWindow(window_, SW_HIDE);
     visible_ = false;
     hot_ = false;
+    flattenUntilLeave_ = false;
 }
 
 void IconLatch::Destroy() {
     if (window_) DestroyWindow(window_);
     window_ = nullptr;
+}
+
+void IconLatch::PeelOff() {
+    if (removing_) return;
+    removing_ = true;
+    if (visible_) RetargetPeel();
+    else FinishRemoval();
 }
 
 void IconLatch::KeepAbove(HWND bar) const {
@@ -209,6 +225,10 @@ void IconLatch::KeepAbove(HWND bar) const {
     }
     const HWND after = higher && (GetWindowLongPtrW(higher, GWL_EXSTYLE) & WS_EX_TOPMOST) ? higher : HWND_TOPMOST;
     SetWindowPos(window_, after, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+}
+
+bool IconLatch::ContainsPointer(POINT pointer) const {
+    return visible_ && PtInRect(&bounds_, pointer) != FALSE;
 }
 
 void IconLatch::Send(LatchGesture gesture) const {
@@ -237,31 +257,24 @@ LRESULT IconLatch::Handle(UINT message, WPARAM wp, LPARAM lp) {
         if (wp == peelTimer) StepPeel();
         return 0;
     case WM_LBUTTONDOWN: {
-        if (down_) return 0;
+        if (down_ || removing_) return 0;
         SetCapture(window_);
         if (GetCapture() != window_) return 0;
         const DWORD point = GetMessagePos();
         peelStart_ = {GET_X_LPARAM(point), GET_Y_LPARAM(point)};
         peelPull_ = 0;
-        peelSide_ = peelStart_.x < bounds_.left + (bounds_.right - bounds_.left) / 2 ? -1 : 1;
+        Hover(true);
         down_ = true;
         dragged_ = false;
-        RetargetPeel();
-        Present(bounds_);
         Send(LatchGesture::peelStart);
         return 0;
     }
     case WM_MOUSEMOVE:
-        if (!hot_ && !down_) {
-            TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, window_, 0};
-            if (TrackMouseEvent(&tracking)) {
-                peelSide_ = GET_X_LPARAM(lp) < (bounds_.right - bounds_.left) / 2 ? -1 : 1;
-                Hover(true);
-            }
-        }
         if (down_) {
             const DWORD point = GetMessagePos();
             PullPaper({GET_X_LPARAM(point), GET_Y_LPARAM(point)});
+        } else {
+            Hover(true);
         }
         return 0;
     case WM_MOUSELEAVE:
@@ -282,12 +295,14 @@ LRESULT IconLatch::Handle(UINT message, WPARAM wp, LPARAM lp) {
     case WM_NCDESTROY: {
         const HWND window = window_;
         StopPeel();
-        if (down_) Send(LatchGesture::peelEnd);
+        if (down_ || removing_) Send(LatchGesture::peelEnd);
         window_ = nullptr;
         bounds_ = {};
         visible_ = false;
         hot_ = false;
+        flattenUntilLeave_ = false;
         down_ = false;
+        removing_ = false;
         SetWindowLongPtrW(window, GWLP_USERDATA, 0);
         return DefWindowProcW(window, message, wp, lp);
     }
@@ -299,12 +314,12 @@ LRESULT IconLatch::Handle(UINT message, WPARAM wp, LPARAM lp) {
 void IconLatch::PullPaper(POINT pointer) {
     const float distance = std::hypot(static_cast<float>(pointer.x - peelStart_.x),
                                       static_cast<float>(pointer.y - peelStart_.y));
-    dragged_ |= distance >= MulDiv(3, dpi_, 96);
+    if (!dragged_ && distance < MulDiv(3, dpi_, 96)) return;
     const float pull = std::clamp(distance * 96.0f / dpi_ / 27.0f, 0.0f, 1.0f);
-    if (std::abs(pull - peelPull_) >= .015f) {
-        peelPull_ = pull;
-        RetargetPeel();
-    }
+    if (dragged_ && std::abs(pull - peelPull_) < .015f) return;
+    dragged_ = true;
+    peelPull_ = pull;
+    RetargetPeel();
 }
 
 void IconLatch::EndPress(bool released) {
@@ -312,31 +327,37 @@ void IconLatch::EndPress(bool released) {
     down_ = false;
     if (GetCapture() == window_) ReleaseCapture();
     RetargetPeel();
-    Present(bounds_);
     if (released) Send(dragged_ ? LatchGesture::peelRemove : LatchGesture::toggle);
     else Send(LatchGesture::peelEnd);
 }
 
 void IconLatch::Hover(bool hot) {
     if (hot == hot_) return;
+    if (hot) {
+        TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, window_, 0};
+        if (!TrackMouseEvent(&tracking)) return;
+    } else {
+        flattenUntilLeave_ = false;
+    }
     hot_ = hot;
     RetargetPeel();
-    if (visible_) Present(bounds_);
 }
 
 double IconLatch::PeelTarget() const {
-    if (down_) return 0.57 + 0.43 * peelPull_;
-    if (hot_) return 0.43;
-    if (corner_) return pinned_ ? 0.0 : 0.12;
-    return pinned_ ? 0.12 : 0.24;
+    if (removing_) return 1.0;
+    if (down_ && dragged_) return 0.57 + 0.43 * peelPull_;
+    if (pinned_) return hot_ && !flattenUntilLeave_ ? pinnedHoverPeel : 0.0;
+    return hot_ ? looseHoverPeel : loosePeel;
 }
 
 void IconLatch::RetargetPeel() {
-    if (!visible_ || peelTick_ || peel_ == PeelTarget()) return;
+    if (!visible_ || peelTick_ || (!removing_ && peel_ == PeelTarget())) return;
     BOOL animations = TRUE;
     SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animations, 0);
     if (animations && SetTimer(window_, peelTimer, 12, nullptr)) {
         peelTick_ = GetTickCount64();
+    } else if (removing_) {
+        FinishRemoval();
     } else {
         StopPeel();
         peel_ = PeelTarget();
@@ -350,6 +371,10 @@ void IconLatch::StepPeel() {
     const double target = PeelTarget();
     peelSpring.Advance(peel_, peelVelocity_, target, (now - peelTick_) / 1000.0);
     peelTick_ = now;
+    if (removing_ && peel_ >= 0.995) {
+        FinishRemoval();
+        return;
+    }
     if (std::abs(peel_ - target) < 0.006 && std::abs(peelVelocity_) < 0.14) {
         peel_ = target;
         StopPeel();
@@ -361,6 +386,12 @@ void IconLatch::StopPeel() {
     if (window_ && peelTick_) KillTimer(window_, peelTimer);
     peelTick_ = 0;
     peelVelocity_ = 0;
+}
+
+void IconLatch::FinishRemoval() {
+    removing_ = false;
+    Hide();
+    Send(LatchGesture::peelRemove);
 }
 
 bool IconLatch::Present(const RECT& bounds) const {
@@ -382,10 +413,11 @@ bool IconLatch::Present(const RECT& bounds) const {
     if (bitmap) {
         if (const HGDIOBJ previous = SelectObject(dc, bitmap)) {
             const auto peel = static_cast<float>(std::clamp(peel_, 0.0, 1.0));
-            Rasterize(static_cast<std::uint32_t*>(pixels), size, atlas, below_, peel, peelSide_, corner_);
+            Rasterize(static_cast<std::uint32_t*>(pixels), size, atlas, below_, peel, corner_);
             POINT origin{bounds.left, bounds.top};
             POINT source{};
-            BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+            const float alpha = removing_ ? std::min(1.0f, (1.0f - peel) / removalFadeSpan) : 1.0f;
+            BLENDFUNCTION blend{AC_SRC_OVER, 0, static_cast<BYTE>(std::lround(255 * alpha)), AC_SRC_ALPHA};
             painted = UpdateLayeredWindow(window_, nullptr, &origin, &size, dc, &source, 0, &blend, ULW_ALPHA) != FALSE;
             SelectObject(dc, previous);
         }

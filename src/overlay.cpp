@@ -510,7 +510,8 @@ void Overlay::OnEvent(DWORD event, HWND window) {
     if (bar != bars_.end()) {
         RECT bounds{};
         if (appearance::ReadDockBounds(window, bounds) && !SameRect(bounds, bar->bounds)) Refresh();
-        else if (bar->primary && GetPropW(window, appearance::dockHeightProperty)) {
+        else if (bar->primary && (GetPropW(window, appearance::dockHeightProperty) ||
+                                  GetPropW(window, appearance::dockWidthProperty))) {
             RECT actual{};
             if (GetWindowRect(window, &actual) && SameRect(actual, bounds)) appearance::RefreshLayout(host_);
         }
@@ -557,8 +558,11 @@ void Overlay::OnTimer(WPARAM timer) {
         SizeMaximized(GetForegroundWindow());
     }
     FloatTaskbar();
-    if (timer == settleTimer && primaryLayer_ == appearance::LayerMode::floating)
+    if (timer == settleTimer && primaryLayer_ == appearance::LayerMode::floating) {
+        // The shell can rebuild its materials after the first layout update.
+        UpdateAppearance();
         appearance::RefreshLatchOrder(host_);
+    }
 }
 
 void Overlay::SizeMaximized(HWND hwnd) {

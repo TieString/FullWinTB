@@ -25,7 +25,7 @@ public:
     bool PositionChanged() const;
     bool TiltChanged() const;
     MotionAxis Axis() const { return axis_; }
-    LONG LeadingX(IconOffset baseline) const;
+    LONG LeadingOffset(IconOffset baseline, MotionAxis axis) const;
     IconOffset AnchorOffset(IconOffset baseline) const;
     IconOffset GripOffset(IconOffset baseline) const;
     IconSliceRow Slices(IconOffset baseline, bool planned) const;
@@ -51,9 +51,10 @@ private:
     std::vector<IconSlice> applied_;
     IconTrail trail_;
     MotionAxis axis_ = MotionAxis::horizontal;
+    MotionAxis dockAxis_ = MotionAxis::horizontal;
     MotionClock::time_point lastFrame_{};
     MotionClock::duration longestDelay_{};
-    std::optional<LONG> anchorX_;
+    std::optional<LONG> anchor_;
     std::size_t nearest_ = 0;
     double dpiScale_ = 1.0;
     bool animateTilt_ = false;

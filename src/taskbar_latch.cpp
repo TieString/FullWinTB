@@ -95,11 +95,17 @@ std::uint32_t StickerPixel(const StickerPose& sticker, float x, float y, bool hi
 }
 
 void Rasterize(std::uint32_t* bitmap, SIZE size, const std::uint8_t* atlas,
-               bool below, float peel, bool corner) {
+               bool below, float peel, bool corner, const RECT& gripClearance) {
     const StickerPose sticker(atlas, peel);
     for (LONG y = 0; y < size.cy; ++y) {
         const LONG row = below ? size.cy - 1 - y : y;
+        const bool crossesGrip = y >= gripClearance.top && y < gripClearance.bottom;
         for (LONG x = 0; x < size.cx; ++x) {
+            // A zero-alpha pixel lets the real taskbar receive the pointer.
+            if (crossesGrip && x >= gripClearance.left && x < gripClearance.right) {
+                *bitmap++ = 0;
+                continue;
+            }
             if (corner) {
                 const float dx = ((x + .5f) / size.cx - .5f) * cornerWidth;
                 const float dy = ((y + .5f) / size.cy - .5f) * cornerHeight;
@@ -136,15 +142,21 @@ void IconLatch::Show(HINSTANCE module, HWND bar, HWND actions, IconGroup group,
     const LONG x = std::clamp(centerX - width / 2, monitor.left, monitor.right - width);
     const LONG y = std::clamp(below ? anchor.bottom - overlap : above, monitor.top, monitor.bottom - height);
     RECT next{x, y, x + width, y + height};
+    RECT gripClearance{};
     if (corner) {
+        const LONG centerY = anchor.top + (anchor.bottom - anchor.top) / 2;
+        const LONG radius = std::max(1, MulDiv(8, dpi, 96));
+        const RECT center{centerX - radius, centerY - radius, centerX + radius, centerY + radius};
+        IntersectRect(&gripClearance, &center, &anchor);
         const LONG wantedX = centerX - MulDiv(12, dpi, 96);
         const LONG paperX = std::max(wantedX, monitor.left + MulDiv(25, dpi, 96));
         // Keep the paper registered to the icon if an empty margin extends beyond the screen.
-        const LONG paperY = anchor.top + (anchor.bottom - anchor.top) / 2
-                          - MulDiv(6, dpi, 96) - (paperX - wantedX) / 3;
+        const LONG paperY = centerY - MulDiv(10, dpi, 96) - (paperX - wantedX) / 3;
         const LONG left = paperX - width / 2;
         const LONG top = paperY - height / 2;
         next = {left, top, left + width, top + height};
+        if (IntersectRect(&gripClearance, &gripClearance, &next))
+            OffsetRect(&gripClearance, -left, -top);
     }
     if (!window_) {
         WNDCLASSW spec{};
@@ -163,11 +175,13 @@ void IconLatch::Show(HINSTANCE module, HWND bar, HWND actions, IconGroup group,
     const bool pinChanged = pinned != pinned_;
     const bool rename = pinChanged || !visible_;
     const bool newSurface = corner != corner_ || !visible_;
-    const bool repaint = dpi != dpi_ || newSurface || below != below_ || rename;
+    const bool repaint = dpi != dpi_ || newSurface || below != below_ || rename ||
+                         !EqualRect(&gripClearance_, &gripClearance);
     if (repaint) {
         dpi_ = dpi;
         corner_ = corner;
         below_ = below;
+        gripClearance_ = gripClearance;
         if (pinChanged) flattenUntilLeave_ = pinned && hot_;
         pinned_ = pinned;
         if (newSurface && !removing_) {
@@ -413,7 +427,7 @@ bool IconLatch::Present(const RECT& bounds) const {
     if (bitmap) {
         if (const HGDIOBJ previous = SelectObject(dc, bitmap)) {
             const auto peel = static_cast<float>(std::clamp(peel_, 0.0, 1.0));
-            Rasterize(static_cast<std::uint32_t*>(pixels), size, atlas, below_, peel, corner_);
+            Rasterize(static_cast<std::uint32_t*>(pixels), size, atlas, below_, peel, corner_, gripClearance_);
             POINT origin{bounds.left, bounds.top};
             POINT source{};
             const float alpha = removing_ ? std::min(1.0f, (1.0f - peel) / removalFadeSpan) : 1.0f;

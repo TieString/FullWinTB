@@ -11,7 +11,7 @@ class TaskbarLayer {
 public:
     void Update(HWND bar, LayerMode mode, HWND orderObserver = nullptr);
     void HoldPresentation(bool held);
-    bool EnsureCanvas(LONG travel, bool top);
+    bool EnsureCanvas(LONG travel, MotionAxis axis, bool towardEnd);
     void CloseCanvas();
     bool CanvasOpen() const { return bridge_ != nullptr; }
     bool CanvasIntact() const;

@@ -27,6 +27,7 @@ inline constexpr wchar_t appsOffsetY[] = L"FullWinTB.AppsOffsetY";
 inline constexpr wchar_t notificationOffsetX[] = L"FullWinTB.NotificationOffsetX";
 inline constexpr wchar_t notificationOffsetY[] = L"FullWinTB.NotificationOffsetY";
 inline constexpr wchar_t appsInkSpanProperty[] = L"FullWinTB.AppsInkSpan";
+inline constexpr wchar_t dockWidthProperty[] = L"FullWinTB.DockWidth";
 inline constexpr wchar_t dockHeightProperty[] = L"FullWinTB.DockHeight";
 inline constexpr LPARAM inkMask = 0x0f;
 inline constexpr UINT layerShift = 4;
@@ -36,11 +37,50 @@ enum class Ink : UINT { system, white, black, automatic };
 enum class LayerMode : UINT { native, floating, covered, suspended };
 enum class MotionAxis : UINT { horizontal, vertical };
 
+inline constexpr MotionAxis OtherAxis(MotionAxis axis) {
+    return axis == MotionAxis::horizontal ? MotionAxis::vertical : MotionAxis::horizontal;
+}
+
+inline constexpr LONG AxisStart(const RECT& rect, MotionAxis axis) {
+    return axis == MotionAxis::horizontal ? rect.left : rect.top;
+}
+
+inline constexpr LONG& AxisStart(RECT& rect, MotionAxis axis) {
+    return axis == MotionAxis::horizontal ? rect.left : rect.top;
+}
+
+inline constexpr LONG AxisEnd(const RECT& rect, MotionAxis axis) {
+    return axis == MotionAxis::horizontal ? rect.right : rect.bottom;
+}
+
+inline constexpr LONG& AxisEnd(RECT& rect, MotionAxis axis) {
+    return axis == MotionAxis::horizontal ? rect.right : rect.bottom;
+}
+
+inline constexpr LONG AxisSize(const RECT& rect, MotionAxis axis) {
+    return AxisEnd(rect, axis) - AxisStart(rect, axis);
+}
+
+inline constexpr LONG AxisPoint(POINT point, MotionAxis axis) {
+    return axis == MotionAxis::horizontal ? point.x : point.y;
+}
+
+inline constexpr MotionAxis TaskbarAxis(const RECT& dock) {
+    return dock.right - dock.left >= dock.bottom - dock.top ? MotionAxis::horizontal : MotionAxis::vertical;
+}
+
+inline constexpr const wchar_t* DockThicknessProperty(MotionAxis axis) {
+    return axis == MotionAxis::horizontal ? dockWidthProperty : dockHeightProperty;
+}
+
 inline bool ReadDockBounds(HWND bar, RECT& bounds) {
     if (!GetWindowRect(bar, &bounds)) return false;
-    const auto height = static_cast<LONG>(reinterpret_cast<LONG_PTR>(GetPropW(bar, dockHeightProperty)));
-    if (height > 0 && height < bounds.bottom - bounds.top) bounds.top = bounds.bottom - height;
-    if (height < 0 && -height < bounds.bottom - bounds.top) bounds.bottom = bounds.top - height;
+    for (const auto axis : {MotionAxis::horizontal, MotionAxis::vertical}) {
+        const auto thickness = static_cast<LONG>(reinterpret_cast<LONG_PTR>(GetPropW(bar, DockThicknessProperty(axis))));
+        const LONG size = AxisSize(bounds, axis);
+        if (thickness > 0 && thickness < size) AxisStart(bounds, axis) = AxisEnd(bounds, axis) - thickness;
+        if (thickness < 0 && thickness > -size) AxisEnd(bounds, axis) = AxisStart(bounds, axis) - thickness;
+    }
     return true;
 }
 

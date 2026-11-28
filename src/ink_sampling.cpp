@@ -100,23 +100,27 @@ TaskbarInkSample ReadTaskbarInk(HWND bar, const RECT& monitor, bool horizontal) 
 
     const HDC screen = GetDC(nullptr);
     if (!screen) return ink;
+    const auto along = horizontal ? MotionAxis::horizontal : MotionAxis::vertical;
+    const auto across = OtherAxis(along);
     RECT notification{};
     if (const HWND tray = FindWindowExW(bar, nullptr, L"TrayNotifyWnd", nullptr);
         tray && GetWindowRect(tray, &notification)) {
-        if (GetPropW(bar, dockHeightProperty)) {
-            notification.top = dock.top;
-            notification.bottom = dock.bottom;
+        if (GetPropW(bar, DockThicknessProperty(across))) {
+            AxisStart(notification, across) = AxisStart(dock, across);
+            AxisEnd(notification, across) = AxisEnd(dock, across);
         }
         OffsetRect(&notification, Offset(bar, notificationOffsetX), Offset(bar, notificationOffsetY));
         if (IntersectRect(&notification, &notification, &bounds))
             ink.notification = ReadInk(screen, notification, horizontal);
     }
     const auto span = reinterpret_cast<UINT_PTR>(GetPropW(bar, appsInkSpanProperty));
-    if (horizontal && span) {
-        RECT apps{dock.left + LOWORD(span), dock.top, dock.left + HIWORD(span), dock.bottom};
+    if (span) {
+        RECT apps = dock;
+        AxisStart(apps, along) += LOWORD(span);
+        AxisEnd(apps, along) = AxisStart(dock, along) + HIWORD(span);
         OffsetRect(&apps, Offset(bar, appsOffsetX), Offset(bar, appsOffsetY));
         if (IntersectRect(&apps, &apps, &bounds))
-            ink.apps = ReadInk(screen, apps, true);
+            ink.apps = ReadInk(screen, apps, horizontal);
     }
     ReleaseDC(nullptr, screen);
     return ink;

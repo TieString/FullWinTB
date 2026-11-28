@@ -114,6 +114,8 @@ struct PreviewThread {
 
         const UINT dpi = GetDpiForWindow(surface);
         const double scale = dpi / 96.0;
+        const auto axis = OtherAxis(TaskbarAxis(dock));
+        const bool sideways = axis == MotionAxis::horizontal;
         const auto nativeTranslation = carrier.Translation();
         if (!original || nativeTranslation != applied) original = nativeTranslation;
         const auto canvasOffset = carrier.ActualOffset();
@@ -124,20 +126,23 @@ struct PreviewThread {
         const auto shape = flyout.TransformToVisual(nullptr).TransformBounds({
             canvasOffset.x + gridOffset.x + original->x, canvasOffset.y + gridOffset.y + original->y,
             size.x, size.y});
-        const LONG height = std::lround(shape.Height * scale);
-        if (!dpi || height <= 0 || height >= host.bottom - host.top) return;
+        const LONG extent = std::lround((sideways ? shape.Width : shape.Height) * scale);
+        if (!dpi || extent <= 0 || extent >= AxisSize(host, axis)) return;
 
         RECT available{};
         if (!IntersectRect(&available, &host, &monitor.rcMonitor)) return;
-        const bool nativeBelow = Near(dock.top, monitor.rcMonitor.top);
-        OffsetRect(&dock, 0, offset);
+        const bool nativeForward = Near(AxisStart(dock, axis), AxisStart(monitor.rcMonitor, axis));
+        OffsetRect(&dock, sideways ? offset : 0, sideways ? 0 : offset);
         if (!IsWindowVisible(surface)) opensBelow.reset();
-        const auto placement = PlacePopup(dock, available, height, MulDiv(8, dpi, 96),
-                                          opensBelow.value_or(nativeBelow));
+        const auto placement = PlacePopup(sideways ? TransposeRect(dock) : dock,
+                                          sideways ? TransposeRect(available) : available,
+                                          extent, MulDiv(8, dpi, 96), opensBelow.value_or(nativeForward));
         opensBelow = placement.below;
         auto target = *original;
-        target.y += static_cast<float>((placement.top - host.top) / scale - shape.Y);
-        if (std::abs(target.y - nativeTranslation.y) >= 0.25f) {
+        auto& translation = sideways ? target.x : target.y;
+        translation += static_cast<float>((placement.top - AxisStart(host, axis)) / scale -
+                                          (sideways ? shape.X : shape.Y));
+        if (std::abs(translation - (sideways ? nativeTranslation.x : nativeTranslation.y)) >= 0.25f) {
             carrier.Translation(target);
             applied = target;
         } else {
@@ -198,15 +203,18 @@ void QueuePreview(HWND control) {
 struct LegacyPreview {
     HWINEVENTHOOK hook = nullptr;
     HWND window = nullptr;
-    LONG movedTop = 0;
-    LONG oldTop = 0;
+    LONG movedPosition = 0;
+    LONG oldPosition = 0;
+    MotionAxis axis = MotionAxis::vertical;
     std::optional<bool> opensBelow;
 
     void Reset() {
         RECT current{};
         if (window && IsWindowVisible(window) && ClassIs(window, legacyClass) &&
-            GetWindowRect(window, &current) && current.top == movedTop)
-            Position(window, current.left, oldTop);
+            GetWindowRect(window, &current) && AxisStart(current, axis) == movedPosition) {
+            AxisStart(current, axis) = oldPosition;
+            Position(window, current.left, current.top);
+        }
         window = nullptr;
         opensBelow.reset();
     }
@@ -223,14 +231,19 @@ struct LegacyPreview {
         if (!window || !IsWindowVisible(window) || !ClassIs(window, legacyClass) ||
             !GetWindowRect(window, &popup) || !ReadDockBounds(taskbar, dock) ||
             !GetMonitorInfoW(MonitorFromWindow(taskbar, MONITOR_DEFAULTTONEAREST), &monitor)) return;
-        const bool below = Near(dock.top, monitor.rcMonitor.top);
-        OffsetRect(&dock, 0, offset);
-        const auto placement = PlacePopup(dock, monitor.rcMonitor, popup.bottom - popup.top,
-                                          MulDiv(8, GetDpiForWindow(window), 96), opensBelow.value_or(below));
+        if (OtherAxis(TaskbarAxis(dock)) != axis) return;
+        const bool sideways = axis == MotionAxis::horizontal;
+        const bool nativeForward = Near(AxisStart(dock, axis), AxisStart(monitor.rcMonitor, axis));
+        OffsetRect(&dock, sideways ? offset : 0, sideways ? 0 : offset);
+        const auto placement = PlacePopup(sideways ? TransposeRect(dock) : dock,
+                                          sideways ? TransposeRect(monitor.rcMonitor) : monitor.rcMonitor,
+                                          AxisSize(popup, axis), MulDiv(8, GetDpiForWindow(window), 96),
+                                          opensBelow.value_or(nativeForward));
         opensBelow = placement.below;
-        if (popup.top != placement.top) {
-            Position(window, popup.left, placement.top);
-            movedTop = placement.top;
+        if (AxisStart(popup, axis) != placement.top) {
+            AxisStart(popup, axis) = placement.top;
+            Position(window, popup.left, popup.top);
+            movedPosition = placement.top;
         }
     }
 };
@@ -240,16 +253,20 @@ LegacyPreview legacy;
 void CALLBACK LegacyShown(HWINEVENTHOOK hook, DWORD, HWND window, LONG object, LONG child, DWORD, DWORD) {
     if (hook != legacy.hook || object != OBJID_WINDOW || child != CHILDID_SELF ||
         !ClassIs(window, legacyClass) || !IsWindowVisible(window)) return;
-    const bool different = legacy.window != window;
+    const HWND bar = taskbarWindow.load();
+    RECT dock{}, original{};
+    if (!ReadDockBounds(bar, dock) || !GetWindowRect(window, &original)) return;
+    const auto axis = OtherAxis(TaskbarAxis(dock));
+    const bool different = legacy.window != window || legacy.axis != axis;
     legacy.opensBelow.reset();
     if (different) {
         legacy.Reset();
         legacy.window = window;
+        legacy.axis = axis;
     }
-    RECT original{};
-    if (GetWindowRect(window, &original) && (different || original.top != legacy.movedTop))
-        legacy.oldTop = legacy.movedTop = original.top;
-    legacy.Apply(taskbarWindow.load(), appDisplacement.load());
+    if (different || AxisStart(original, axis) != legacy.movedPosition)
+        legacy.oldPosition = legacy.movedPosition = AxisStart(original, axis);
+    legacy.Apply(bar, appDisplacement.load());
 }
 
 } // namespace

@@ -7,6 +7,7 @@
 #include "../src/sticker_atlas.h"
 #include "../src/taskbar_motion.h"
 #include "../src/taskbar_layer.h"
+#include "../src/taskbar_latch.h"
 #include "../src/taskbar_region.h"
 #include <array>
 #include <cstdio>
@@ -47,7 +48,11 @@ LRESULT CALLBACK WatchBridge(HWND window, UINT message, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(window, message, wp, lp);
 }
 
-bool VisibleCanvasRoundTrip() {
+bool VisibleCanvasRoundTrip(appearance::MotionAxis axis, bool towardEnd) {
+    const bool sideways = axis == appearance::MotionAxis::horizontal;
+    const RECT dock = sideways ? RECT{0, 0, 16, 64} : RECT{0, 0, 64, 16};
+    const int width = dock.right - dock.left;
+    const int height = dock.bottom - dock.top;
     const HINSTANCE module = GetModuleHandleW(nullptr);
     WNDCLASSW spec{};
     spec.hInstance = module;
@@ -66,24 +71,28 @@ bool VisibleCanvasRoundTrip() {
     };
     if (!RegisterClassW(&parentSpec)) return false;
     const HWND parent = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, parentSpec.lpszClassName, nullptr,
-                                        WS_POPUP | WS_VISIBLE, 0, 0, 64, 16, nullptr, nullptr, module, nullptr);
+                                        WS_POPUP | WS_VISIBLE, 0, 0, width, height, nullptr, nullptr, module, nullptr);
     const HWND child = parent ? CreateWindowExW(0, spec.lpszClassName, nullptr, WS_CHILD | WS_VISIBLE,
-                                               0, 0, 64, 16, parent, nullptr, module, nullptr) : nullptr;
+                                               0, 0, width, height, parent, nullptr, module, nullptr) : nullptr;
     bool passed = false;
     if (child) {
         appearance::TaskbarLayer layer;
         layer.Update(parent, appearance::LayerMode::floating);
         bridgeVisibilityChanges = 0;
-        const bool grew = layer.EnsureCanvas(30, true) && layer.EnsureCanvas(60, true) && layer.CanvasIntact();
+        RECT nativeDock{};
+        const bool grew = layer.EnsureCanvas(30, axis, towardEnd) &&
+                          layer.EnsureCanvas(60, axis, towardEnd) && layer.CanvasIntact() &&
+                          appearance::ReadDockBounds(parent, nativeDock) && SameRect(nativeDock, dock);
         nativeErases = 0;
         SendMessageW(parent, WM_ERASEBKGND, 0, 0);
-        HRGN movingClip = CreateRectRgn(0, 8, 54, 24);
+        const RECT expectedClip = sideways ? RECT{8, 0, 24, 54} : RECT{0, 8, 54, 24};
+        HRGN movingClip = CreateRectRgnIndirect(&expectedClip);
         const bool regionWritten = movingClip && appearance::WriteTaskbarRegion(parent, movingClip, true);
         if (!regionWritten && movingClip) DeleteObject(movingClip);
         const HRGN actualClip = CreateRectRgn(0, 0, 0, 0);
         RECT clipBounds{};
         const bool clipped = actualClip && GetWindowRgn(parent, actualClip) == SIMPLEREGION &&
-            GetRgnBox(actualClip, &clipBounds) == SIMPLEREGION && SameRect(clipBounds, {0, 8, 54, 24});
+            GetRgnBox(actualClip, &clipBounds) == SIMPLEREGION && SameRect(clipBounds, expectedClip);
         if (actualClip) DeleteObject(actualClip);
         const bool eraseSuppressed = nativeErases == 0;
         const bool keptBridgeVisible = bridgeVisibilityChanges == 0;
@@ -105,7 +114,7 @@ bool VisibleCanvasRoundTrip() {
         SendMessageW(parent, WM_ERASEBKGND, 0, 0);
         RECT parentBounds{}, childBounds{};
         passed = grew && GetWindowRect(parent, &parentBounds) && GetWindowRect(child, &childBounds) &&
-                 SameRect(parentBounds, {0, 0, 64, 16}) && SameRect(childBounds, parentBounds) &&
+                 SameRect(parentBounds, dock) && SameRect(childBounds, parentBounds) &&
                  IsWindowVisible(child) && keptBridgeVisible && regionWritten && clipped && eraseSuppressed &&
                  nativeErases == 1 && suspendedInPlace && hiddenUntilReady && revealed && coverStillHidden;
         if (!passed)
@@ -119,7 +128,7 @@ bool VisibleCanvasRoundTrip() {
     return passed;
 }
 
-bool HorizontalClipRoundTrip() {
+bool MovingClipRoundTrip(bool sideways) {
     using namespace appearance;
     const HINSTANCE module = GetModuleHandleW(nullptr);
     WNDCLASSW spec{};
@@ -128,15 +137,22 @@ bool HorizontalClipRoundTrip() {
     spec.lpszClassName = L"Shell_TrayWnd";
     if (!RegisterClassW(&spec)) return false;
 
-    const HWND bar = CreateWindowExW(0, spec.lpszClassName, nullptr, WS_POPUP,
-                                     60, 100, 400, 44, nullptr, nullptr, module, nullptr);
-    const HRGN native = CreateRectRgn(111, 2, 169, 42);
-    const HRGN part = CreateRectRgn(287, 2, 399, 42);
+    const auto orient = [sideways](RECT rect) { return sideways ? TransposeRect(rect) : rect; };
+    const auto offset = [sideways](LONG x, LONG y) { return sideways ? IconOffset{y, x} : IconOffset{x, y}; };
+    const RECT dock = orient({60, 100, 460, 144});
+    const HWND bar = CreateWindowExW(0, spec.lpszClassName, nullptr, WS_POPUP, dock.left, dock.top,
+                                     dock.right - dock.left, dock.bottom - dock.top,
+                                     nullptr, nullptr, module, nullptr);
+    const RECT nativeBounds = orient({111, 2, 169, 42});
+    const RECT notification = orient({287, 2, 399, 42});
+    const RECT hole = orient({135, 7, 143, 38});
+    const HRGN native = CreateRectRgnIndirect(&nativeBounds);
+    const HRGN part = CreateRectRgnIndirect(&notification);
     const HRGN initial = CreateRectRgn(0, 0, 0, 0);
     const HRGN actual = CreateRectRgn(0, 0, 0, 0);
     const bool nativeInstalled = bar && native && part && initial && actual &&
         CombineRgn(native, native, part, RGN_OR) != ERROR &&
-        SetRectRgn(part, 135, 7, 143, 38) &&
+        SetRectRgn(part, hole.left, hole.top, hole.right, hole.bottom) &&
         CombineRgn(native, native, part, RGN_DIFF) != ERROR &&
         CombineRgn(initial, native, nullptr, RGN_COPY) != ERROR &&
         SetWindowRgn(bar, native, FALSE);
@@ -144,32 +160,33 @@ bool HorizontalClipRoundTrip() {
     if (nativeInstalled) {
         TaskbarLayout layout{};
         layout.bar = bar;
-        layout.bounds = layout.dock = {60, 100, 460, 144};
-        layout.startButton = {170, 100, 230, 144};
+        layout.bounds = layout.dock = dock;
+        layout.startButton = orient({170, 100, 230, 144});
         layout.buttons.push_back(layout.startButton);
-        layout.notification = {345, 100, 460, 144};
+        layout.notification = orient({345, 100, 460, 144});
 
         TaskbarRegion region;
+        const auto hit = [&](LONG x, LONG y) { return PtInRegion(actual, sideways ? y : x, sideways ? x : y); };
         region.Update(layout, {}, true);
-        const bool movedLeft = region.Place(layout, {{-60, 0}, {-28, 0}}, true) && region.FinishMotion() &&
-            GetWindowRgn(bar, actual) != ERROR && PtInRegion(actual, 57, 22) && !PtInRegion(actual, 80, 22) &&
-            !PtInRegion(actual, 125, 22) && PtInRegion(actual, 263, 22) && !PtInRegion(actual, 380, 22) &&
-            !PtInRegion(actual, 57, 1);
-        const bool movedRight = region.Place(layout, {{60, 0}, {}}, true) && region.FinishMotion() &&
-            GetWindowRgn(bar, actual) != ERROR && PtInRegion(actual, 180, 22) && !PtInRegion(actual, 198, 22) &&
-            !PtInRegion(actual, 125, 22) && PtInRegion(actual, 380, 22);
-        layout.bounds.top = 0;
-        const bool movedDiagonally = SetWindowPos(bar, nullptr, 60, 0, 400, 144, SWP_NOZORDER | SWP_NOACTIVATE) &&
-            region.Rebase(layout, {{60, 0}, {}}) &&
-            region.Place(layout, {{-60, -60}, {-28, 0}}, true) && region.FinishMotion() &&
-            GetWindowRgn(bar, actual) != ERROR && PtInRegion(actual, 57, 62) && !PtInRegion(actual, 80, 62) &&
-            !PtInRegion(actual, 57, 122) && PtInRegion(actual, 263, 122);
+        const bool towardStart = region.Place(layout, {offset(-60, 0), offset(-28, 0)}, true) && region.FinishMotion() &&
+            GetWindowRgn(bar, actual) != ERROR && hit(57, 22) && !hit(80, 22) &&
+            !hit(125, 22) && hit(263, 22) && !hit(380, 22) && !hit(57, 1);
+        const bool towardEnd = region.Place(layout, {offset(60, 0), {}}, true) && region.FinishMotion() &&
+            GetWindowRgn(bar, actual) != ERROR && hit(180, 22) && !hit(198, 22) &&
+            !hit(125, 22) && hit(380, 22);
+        layout.bounds = orient({60, 0, 460, 144});
+        const auto& bounds = layout.bounds;
+        const bool movedDiagonally = SetWindowPos(bar, nullptr, bounds.left, bounds.top,
+            bounds.right - bounds.left, bounds.bottom - bounds.top, SWP_NOZORDER | SWP_NOACTIVATE) &&
+            region.Rebase(layout, {offset(60, 0), {}}) &&
+            region.Place(layout, {offset(-60, -60), offset(-28, 0)}, true) && region.FinishMotion() &&
+            GetWindowRgn(bar, actual) != ERROR && hit(57, 62) && !hit(80, 62) && !hit(57, 122) && hit(263, 122);
         region.Reset();
         const bool restored = GetWindowRgn(bar, actual) != ERROR && EqualRgn(initial, actual);
-        if (!movedLeft || !movedRight || !movedDiagonally || !restored)
-            std::fprintf(stderr, "moving clip: left=%d right=%d diagonal=%d restored=%d\n",
-                         movedLeft, movedRight, movedDiagonally, restored);
-        passed = movedLeft && movedRight && movedDiagonally && restored;
+        if (!towardStart || !towardEnd || !movedDiagonally || !restored)
+            std::fprintf(stderr, "moving clip (%s): start=%d end=%d diagonal=%d restored=%d\n",
+                         sideways ? "side dock" : "horizontal dock", towardStart, towardEnd, movedDiagonally, restored);
+        passed = towardStart && towardEnd && movedDiagonally && restored;
     }
     if (!nativeInstalled && native) DeleteObject(native);
     if (part) DeleteObject(part);
@@ -180,13 +197,53 @@ bool HorizontalClipRoundTrip() {
     return passed;
 }
 
+bool StickerKeepsGripClickable() {
+    using namespace appearance;
+    const HINSTANCE module = GetModuleHandleW(nullptr);
+    WNDCLASSW spec{};
+    spec.hInstance = module;
+    spec.lpfnWndProc = DefWindowProcW;
+    spec.lpszClassName = L"FullWinTB.StickerTest";
+    if (!RegisterClassW(&spec)) return false;
+    const HWND bar = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, spec.lpszClassName, nullptr,
+                                     WS_POPUP | WS_VISIBLE, 700, 0, 48, 600, nullptr, nullptr, module, nullptr);
+    bool passed = bar != nullptr;
+    if (bar) {
+        const RECT grip{700, 110, 748, 154};
+        const RECT monitor{0, 0, 748, 600};
+        const POINT center{724, 132};
+        IconLatch latch;
+        latch.Show(module, bar, bar, IconGroup::apps, grip, 96, monitor, true, false);
+        const HWND sticker = FindWindowW(L"FullWinTB.IconLatch.v" FULLWINTB_APPEARANCE_VERSION_WIDE, nullptr);
+        RECT paper{};
+        const bool centered = sticker && GetWindowRect(sticker, &paper) && PtInRect(&paper, center) &&
+                              WindowFromPoint(center) == bar;
+        bool paperClickable = false;
+        if (centered) {
+            for (LONG y = paper.top; y < paper.bottom && !paperClickable; y += 3)
+                for (LONG x = paper.left; x < paper.right && !paperClickable; x += 3)
+                    paperClickable = WindowFromPoint({x, y}) == sticker;
+        }
+        passed = centered && paperClickable;
+        latch.Destroy();
+        DestroyWindow(bar);
+    }
+    UnregisterClassW(spec.lpszClassName, module);
+    if (!passed) std::fprintf(stderr, "the sticker intercepted the native grip or lost its own hit area\n");
+    return passed;
+}
+
 DWORD WINAPI IsolatedCanvasThread(void* desktop) {
     if (!SetThreadDesktop(static_cast<HDESK>(desktop))) {
         const DWORD error = GetLastError();
         std::fprintf(stderr, "isolated test could not attach to its desktop: %lu\n", error);
         return error == ERROR_ACCESS_DENIED ? 77 : 1;
     }
-    return VisibleCanvasRoundTrip() && HorizontalClipRoundTrip() ? 0 : 1;
+    using appearance::MotionAxis;
+    return VisibleCanvasRoundTrip(MotionAxis::vertical, true) &&
+           VisibleCanvasRoundTrip(MotionAxis::horizontal, true) &&
+           VisibleCanvasRoundTrip(MotionAxis::horizontal, false) &&
+           MovingClipRoundTrip(false) && MovingClipRoundTrip(true) && StickerKeepsGripClickable() ? 0 : 1;
 }
 
 int IsolatedCanvasRoundTrip() {
@@ -554,6 +611,11 @@ int main(int argc, char** argv) {
     check(trayAtTop.below && trayAtTop.top == 98, "a bottom-mounted tray opens downward after being moved up");
     const auto tall = PlacePopup({0, 250, 800, 300}, {0, 0, 800, 600}, 440, 12, false);
     check(tall.below && tall.top == 160, "a popup taller than either side stays within the screen");
+    const RECT sidewaysScreen = TransposeRect({0, 0, 2560, 1600});
+    const auto onLeft = PlacePopup(TransposeRect({0, 0, 84, 1600}), sidewaysScreen, 250, 12, false);
+    const auto onRight = PlacePopup(TransposeRect({2476, 0, 2560, 1600}), sidewaysScreen, 250, 12, true);
+    check(onLeft.below && onLeft.top == 96 && !onRight.below && onRight.top == 2214,
+          "side dock popups choose the space inside either screen edge");
 
     appearance::IconWheelGesture gesture;
     check(!gesture.Continues({1920, 1558}, 1000, 8), "a fresh wheel event is not owned by FullWinTB");
@@ -604,5 +666,18 @@ int main(int argc, char** argv) {
           SameRect(TaskbarRegion::ReturnArea(layout, {{-112, -112}, {}}, IconGroup::apps),
                    RECT{828, 1404, 1700, 1600}),
           "vertical and diagonal dwell extend to the original taskbar row");
+    auto side = layout;
+    side.bounds = TransposeRect(layout.bounds);
+    side.dock = TransposeRect(layout.dock);
+    side.startButton = TransposeRect(layout.startButton);
+    side.notification = TransposeRect(layout.notification);
+    side.buttons.front() = TransposeRect(layout.buttons.front());
+    const auto sideTravel = TaskbarRegion::Travel(side);
+    check(sideTravel.Project({{}, {0, -112}}) == appearance::IconOffsets{{0, -45}, {0, -112}} &&
+          sideTravel.Project({{-300, 0}, {20, 0}}) == appearance::IconOffsets{{-203, 0}, {}},
+          "side dock pushes along the column and uses a horizontal viewport");
+    check(SameRect(TaskbarRegion::ReturnArea(side, {{-112, -112}, {}}, IconGroup::apps),
+                   TransposeRect({828, 1404, 1700, 1600})),
+          "side dock dwell covers the space between both positions");
     return failures ? 1 : 0;
 }

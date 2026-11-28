@@ -1,3 +1,4 @@
+#include "appearance.h"
 #include "geometry.h"
 
 #include <commctrl.h>
@@ -41,12 +42,13 @@ xaml::FrameworkElement FindElement(const xaml::DependencyObject& node, const Mat
     return nullptr;
 }
 
-struct VerticalMirror {
+struct AxisMirror {
     winrt::weak_ref<xaml::FrameworkElement> target;
     xaml::Media::TransformGroup applied{nullptr};
     xaml::Media::Transform original{nullptr};
     xaml::Media::ScaleTransform reflection{nullptr};
     winrt::Windows::Foundation::IInspectable originalLocal{nullptr};
+    MotionAxis appliedAxis = MotionAxis::vertical;
 
     void Restore() noexcept {
         if (!applied) return;
@@ -70,18 +72,30 @@ struct VerticalMirror {
         originalLocal = nullptr;
     }
 
-    bool Apply(const xaml::FrameworkElement& element, double axis) noexcept try {
-        const double center = axis - element.ActualHeight() * element.RenderTransformOrigin().Y;
-        if (target.get() == element && element.RenderTransform() == applied) {
-            if (reflection.CenterY() != center) reflection.CenterY(center);
+    bool Apply(const xaml::FrameworkElement& element, double pivot, MotionAxis axis) noexcept try {
+        const bool horizontal = axis == MotionAxis::horizontal;
+        const auto origin = element.RenderTransformOrigin();
+        const double center = pivot - (horizontal ? element.ActualWidth() * origin.X
+                                                  : element.ActualHeight() * origin.Y);
+        if (appliedAxis == axis && target.get() == element && element.RenderTransform() == applied) {
+            if (horizontal) {
+                if (reflection.CenterX() != center) reflection.CenterX(center);
+            } else if (reflection.CenterY() != center) {
+                reflection.CenterY(center);
+            }
             return true;
         }
         Restore();
         auto local = element.ReadLocalValue(xaml::UIElement::RenderTransformProperty());
         auto originalTransform = element.RenderTransform();
         xaml::Media::ScaleTransform flip;
-        flip.ScaleY(-1);
-        flip.CenterY(center);
+        if (horizontal) {
+            flip.ScaleX(-1);
+            flip.CenterX(center);
+        } else {
+            flip.ScaleY(-1);
+            flip.CenterY(center);
+        }
         xaml::Media::TransformGroup group;
         if (originalTransform) group.Children().Append(originalTransform);
         group.Children().Append(flip);
@@ -92,6 +106,7 @@ struct VerticalMirror {
         applied = std::move(group);
         reflection = std::move(flip);
         target = std::move(weak);
+        appliedAxis = axis;
         return true;
     } catch (const winrt::hresult_error&) {
         return false;
@@ -102,7 +117,7 @@ struct Chevron {
     winrt::weak_ref<xaml::FrameworkElement> trayFrame;
     winrt::weak_ref<xaml::FrameworkElement> button;
     winrt::weak_ref<xaml::FrameworkElement> glyph;
-    VerticalMirror mirror;
+    AxisMirror mirror;
 
     void Bind(const xaml::FrameworkElement& tray) {
         if (trayFrame.get() == tray) return;
@@ -128,7 +143,7 @@ struct Chevron {
         return chevron;
     }
 
-    void SetDirection(bool reverse) noexcept try {
+    void SetDirection(bool reverse, MotionAxis axis) noexcept try {
         if (!reverse) {
             mirror.Restore();
             return;
@@ -146,19 +161,23 @@ struct Chevron {
             if (!text) return;
             glyph = winrt::make_weak(text);
         }
-        if (text.ActualHeight() <= 0) return;
-        mirror.Apply(text, text.ActualHeight() * 0.5);
+        const double size = axis == MotionAxis::horizontal ? text.ActualWidth() : text.ActualHeight();
+        if (size > 0) mirror.Apply(text, size * 0.5, axis);
     } catch (const winrt::hresult_error&) {
         // The next layout can provide a new chevron.
     }
 
-    std::optional<LONG> Center(HWND bar, UINT dpi) noexcept try {
+    std::optional<LONG> Center(HWND bar, UINT dpi, MotionAxis axis) noexcept try {
         const auto chevron = Button();
         RECT bounds{};
-        if (!chevron || chevron.ActualWidth() <= 0 || !GetWindowRect(bar, &bounds)) return std::nullopt;
+        if (!chevron || !GetWindowRect(bar, &bounds)) return std::nullopt;
+        const bool horizontal = axis == MotionAxis::horizontal;
+        const auto size = horizontal ? chevron.ActualWidth() : chevron.ActualHeight();
+        if (size <= 0) return std::nullopt;
+        const float midpoint = static_cast<float>(size * 0.5);
         const auto center = chevron.TransformToVisual(nullptr).TransformPoint(
-            {static_cast<float>(chevron.ActualWidth() * 0.5), 0});
-        return bounds.left + std::lround(center.X * dpi / 96.0);
+            {horizontal ? midpoint : 0, horizontal ? 0 : midpoint});
+        return AxisStart(bounds, axis) + std::lround((horizontal ? center.X : center.Y) * dpi / 96.0);
     } catch (const winrt::hresult_error&) {
         return std::nullopt;
     }
@@ -169,8 +188,9 @@ struct OverflowAnimation {
     winrt::weak_ref<xaml::FrameworkElement> frame;
     winrt::weak_ref<xaml::FrameworkElement> grid;
     winrt::event_token sized{};
-    VerticalMirror outer;
-    VerticalMirror inner;
+    AxisMirror outer;
+    AxisMirror inner;
+    MotionAxis axis = MotionAxis::vertical;
     bool reversed = false;
 
     void Restore() {
@@ -181,15 +201,21 @@ struct OverflowAnimation {
     void Update() noexcept try {
         const auto panel = frame.get();
         const auto content = grid.get();
-        if (!reversed || !panel || !content || content.ActualHeight() <= 0) {
+        if (!reversed || !panel || !content) {
             Restore();
             return;
         }
-        const double center = content.ActualHeight() * 0.5;
+        const bool horizontal = axis == MotionAxis::horizontal;
+        const double center = (horizontal ? content.ActualWidth() : content.ActualHeight()) * 0.5;
+        if (center <= 0) {
+            Restore();
+            return;
+        }
         double offset = 0;
         xaml::DependencyObject node = content;
         while (node && node != panel) {
-            offset += node.as<xaml::UIElement>().ActualOffset().y;
+            const auto position = node.as<xaml::UIElement>().ActualOffset();
+            offset += horizontal ? position.x : position.y;
             node = xaml::Media::VisualTreeHelper::GetParent(node);
         }
         if (!node) {
@@ -198,7 +224,7 @@ struct OverflowAnimation {
         }
         // Equal reflections leave the resting contents in their original
         // positions and reverse the shell's motion between these two layers.
-        if (!inner.Apply(content, center) || !outer.Apply(panel, offset + center)) Restore();
+        if (!inner.Apply(content, center, axis) || !outer.Apply(panel, offset + center, axis)) Restore();
     } catch (const winrt::hresult_error&) {
         Restore();
     }
@@ -223,43 +249,56 @@ struct Overflow {
     RECT screen{};
     RECT row{};
     UINT dpi = 0;
-    LONG panelHeight = 0;
-    bool nativeBelow = false;
+    LONG panelExtent = 0;
+    bool nativeForward = false;
     bool subclassed = false;
-    std::optional<bool> openBelow;
+    std::optional<bool> openForward;
 
-    PopupPlacement Placement(LONG height) const {
-        return PlacePopup(row, screen, height, MulDiv(8, dpi, 96), openBelow.value_or(nativeBelow));
+    MotionAxis PopupAxis() const { return OtherAxis(TaskbarAxis(dock)); }
+
+    PopupPlacement Placement(LONG size) const {
+        const bool sideways = PopupAxis() == MotionAxis::horizontal;
+        return PlacePopup(sideways ? TransposeRect(row) : row, sideways ? TransposeRect(screen) : screen,
+                          size, MulDiv(8, dpi, 96), openForward.value_or(nativeForward));
     }
 
     void SetDirection(bool reverse) {
-        chevron.SetDirection(reverse);
-        if (animation.reversed != reverse) {
+        const auto axis = PopupAxis();
+        chevron.SetDirection(reverse, axis);
+        if (animation.reversed != reverse || animation.axis != axis) {
             animation.reversed = reverse;
+            animation.axis = axis;
             animation.Update();
         }
     }
 
     void RefreshDirection() {
-        if (bar) SetDirection(Placement(panelHeight).below != nativeBelow);
+        if (bar) SetDirection(Placement(panelExtent).below != nativeForward);
     }
 
-    POINT Position(LONG left, LONG width, LONG height, bool opening) {
-        panelHeight = height;
-        const auto placement = Placement(height);
-        if (opening || IsWindowVisible(popup)) openBelow = placement.below;
-        SetDirection(placement.below != nativeBelow);
-        if (const auto center = chevron.Center(bar, dpi)) left = *center - width / 2;
-        return {std::clamp(left, screen.left, std::max(screen.left, screen.right - width)), placement.top};
+    POINT Position(POINT origin, LONG width, LONG height, bool opening) {
+        const auto axis = PopupAxis();
+        const bool sideways = axis == MotionAxis::horizontal;
+        const auto along = OtherAxis(axis);
+        const LONG length = sideways ? height : width;
+        panelExtent = sideways ? width : height;
+        const auto placement = Placement(panelExtent);
+        if (opening || IsWindowVisible(popup)) openForward = placement.below;
+        SetDirection(placement.below != nativeForward);
+        LONG start = AxisPoint(origin, along);
+        if (const auto center = chevron.Center(bar, dpi, along)) start = *center - length / 2;
+        const LONG first = AxisStart(screen, along);
+        start = std::clamp(start, first, std::max(first, AxisEnd(screen, along) - length));
+        return sideways ? POINT{placement.top, start} : POINT{start, placement.top};
     }
 
     void Move(bool evenIfHidden = false) {
         RECT rectangle{};
         const bool visible = popup && IsWindowVisible(popup);
-        if (!visible) openBelow.reset();
+        if (!visible) openForward.reset();
         if (!popup || (!visible && !evenIfHidden) || !GetWindowRect(popup, &rectangle) || IsRectEmpty(&rectangle))
             return;
-        const auto target = Position(rectangle.left, rectangle.right - rectangle.left,
+        const auto target = Position({rectangle.left, rectangle.top}, rectangle.right - rectangle.left,
                                      rectangle.bottom - rectangle.top, false);
         if (target.x == rectangle.left && target.y == rectangle.top) return;
         SetWindowPos(popup, nullptr, target.x, target.y, 0, 0,
@@ -270,7 +309,7 @@ struct Overflow {
         if (subclassed) RemoveWindowSubclass(popup, WindowProc, subclassId);
         subclassed = false;
         popup = nullptr;
-        openBelow.reset();
+        openForward.reset();
     }
 
     void Attach(HWND window) {
@@ -282,18 +321,19 @@ struct Overflow {
             subclassed = SetWindowSubclass(popup, WindowProc, subclassId, reinterpret_cast<DWORD_PTR>(this)) != FALSE;
         RECT rectangle{};
         if (GetWindowRect(popup, &rectangle) && !IsRectEmpty(&rectangle))
-            panelHeight = rectangle.bottom - rectangle.top;
+            panelExtent = AxisSize(rectangle, PopupAxis());
     }
 
     void Reset() {
         if (events) UnhookWinEvent(std::exchange(events, nullptr));
-        if (bar) {
+        if (bar && !SameRect(row, dock)) {
             row = dock;
-            openBelow.reset();
+            openForward.reset();
             Move(true);
         }
         Detach();
         SetDirection(false);
+        chevron.Bind(nullptr);
         bar = nullptr;
     }
 
@@ -308,7 +348,7 @@ struct Overflow {
         if (message != WM_WINDOWPOSCHANGING || !lp || window != state.popup) return result;
         auto& change = *reinterpret_cast<WINDOWPOS*>(lp);
         if (change.flags & SWP_HIDEWINDOW) {
-            state.openBelow.reset();
+            state.openForward.reset();
             return result;
         }
         constexpr UINT noGeometry = SWP_NOMOVE | SWP_NOSIZE;
@@ -318,8 +358,8 @@ struct Overflow {
         const LONG width = change.flags & SWP_NOSIZE ? existing.right - existing.left : change.cx;
         const LONG height = change.flags & SWP_NOSIZE ? existing.bottom - existing.top : change.cy;
         if (width <= 0 || height <= 0) return result;
-        const LONG left = change.flags & SWP_NOMOVE ? existing.left : change.x;
-        const auto target = state.Position(left, width, height, (change.flags & SWP_SHOWWINDOW) != 0);
+        const POINT origin = change.flags & SWP_NOMOVE ? POINT{existing.left, existing.top} : POINT{change.x, change.y};
+        const auto target = state.Position(origin, width, height, (change.flags & SWP_SHOWWINDOW) != 0);
         change.x = target.x;
         change.y = target.y;
         change.flags &= ~SWP_NOMOVE;
@@ -329,11 +369,17 @@ struct Overflow {
 
 Overflow overflow;
 
-void CALLBACK OnPopupShown(HWINEVENTHOOK hook, DWORD, HWND window, LONG object, LONG child, DWORD, DWORD) {
+void CALLBACK OnPopupVisibility(HWINEVENTHOOK hook, DWORD event, HWND window, LONG object, LONG child, DWORD, DWORD) {
     if (hook != overflow.events || !overflow.bar || object != OBJID_WINDOW ||
-        child != CHILDID_SELF || !IsOverflowWindow(window)) return;
-    overflow.Attach(window);
-    overflow.Move();
+        child != CHILDID_SELF) return;
+    if (event == EVENT_OBJECT_HIDE) {
+        if (window != overflow.popup) return;
+        overflow.openForward.reset();
+    } else {
+        if (!IsOverflowWindow(window)) return;
+        overflow.Attach(window);
+        overflow.Move();
+    }
     overflow.RefreshDirection();
 }
 
@@ -393,22 +439,24 @@ void RemoveTrayOverflowGrid(InstanceHandle handle) {
 }
 
 void FollowTrayOverflow(HWND bar, const RECT& dock, LONG x, LONG y, const xaml::FrameworkElement& tray) {
-    if (!bar || (!x && !y)) {
+    if (!bar || IsRectEmpty(&dock) || !tray) {
         if (overflow.bar) overflow.Reset();
         return;
     }
-    if (overflow.bar != bar || !SameRect(dock, overflow.dock)) {
+    const UINT dpi = GetDpiForWindow(bar);
+    if (overflow.bar != bar || !SameRect(dock, overflow.dock) || overflow.dpi != dpi) {
         overflow.Reset();
         MONITORINFO monitor{sizeof(monitor)};
-        if (!GetMonitorInfoW(MonitorFromWindow(bar, MONITOR_DEFAULTTONULL), &monitor)) return;
+        if (!dpi || !GetMonitorInfoW(MonitorFromRect(&dock, MONITOR_DEFAULTTONULL), &monitor)) return;
         overflow.bar = bar;
         overflow.dock = dock;
         overflow.screen = monitor.rcMonitor;
-        overflow.dpi = GetDpiForWindow(bar);
-        overflow.nativeBelow = Near(dock.top, monitor.rcMonitor.top);
-        overflow.panelHeight = MulDiv(200, overflow.dpi, 96);
+        overflow.dpi = dpi;
+        const auto axis = overflow.PopupAxis();
+        overflow.nativeForward = Near(AxisStart(dock, axis), AxisStart(monitor.rcMonitor, axis));
+        overflow.panelExtent = MulDiv(200, overflow.dpi, 96);
         overflow.Attach(FindOverflow());
-        overflow.events = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr, OnPopupShown,
+        overflow.events = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_HIDE, nullptr, OnPopupVisibility,
                                           GetCurrentProcessId(), 0, WINEVENT_OUTOFCONTEXT);
     }
     overflow.chevron.Bind(tray);

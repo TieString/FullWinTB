@@ -6,8 +6,8 @@
 namespace fullwintb::appearance {
 
 struct IconSlice {
-    LONG left;
-    LONG right;
+    LONG first;
+    LONG last;
     LONG offset;
 };
 
@@ -28,7 +28,8 @@ struct IconTravel {
     IconOffsets minimum;
     IconOffsets maximum;
     LONG clearance = 0;
-    LONG height = 0;
+    LONG thickness = 0;
+    MotionAxis along = MotionAxis::horizontal;
 
     IconOffset Clamp(IconGroup group, IconOffset position) const;
     bool ShareRow(IconOffsets offsets) const;

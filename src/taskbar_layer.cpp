@@ -76,7 +76,7 @@ void TaskbarLayer::Detach() {
     mode_ = LayerMode::native;
 }
 
-bool TaskbarLayer::EnsureCanvas(LONG travel, bool top) {
+bool TaskbarLayer::EnsureCanvas(LONG travel, MotionAxis axis, bool towardEnd) {
     if (!bar_ || mode_ != LayerMode::floating || travel <= 0) return false;
     const bool growing = bridge_ != nullptr;
     HWND bridge = bridge_;
@@ -92,13 +92,14 @@ bool TaskbarLayer::EnsureCanvas(LONG travel, bool top) {
     MONITORINFO before{sizeof(before)}, after{sizeof(after)};
     if (!monitor || !GetMonitorInfoW(monitor, &before)) return false;
     const RECT previous = growing ? viewport_ : dock_;
-    const LONG height = dock_.bottom - dock_.top;
-    if (!growing && !SetPropW(bar_, dockHeightProperty,
-                             reinterpret_cast<HANDLE>(static_cast<LONG_PTR>(top ? -height : height)))) return false;
+    const LONG thickness = AxisSize(dock_, axis);
+    if (!growing && !SetPropW(bar_, DockThicknessProperty(axis),
+                             reinterpret_cast<HANDLE>(static_cast<LONG_PTR>(towardEnd ? -thickness : thickness))))
+        return false;
     bridge_ = bridge;
     viewport_ = dock_;
-    if (top) viewport_.bottom += travel;
-    else viewport_.top -= travel;
+    if (towardEnd) AxisEnd(viewport_, axis) += travel;
+    else AxisStart(viewport_, axis) -= travel;
     if (SizeCanvas(viewport_) && CanvasIntact() && GetMonitorInfoW(monitor, &after) &&
         SameRect(before.rcWork, after.rcWork)) return true;
     if (growing) {
@@ -145,6 +146,7 @@ void TaskbarLayer::CloseCanvas() {
                          SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
         }
     }
+    RemovePropW(bar_, dockWidthProperty);
     RemovePropW(bar_, dockHeightProperty);
     bridge_ = nullptr;
 }
@@ -184,6 +186,7 @@ LRESULT CALLBACK TaskbarLayer::WindowProc(HWND window, UINT message, WPARAM wp, 
         RemovePropW(window, attachedProperty);
         RemovePropW(window, demotionsProperty);
         RemovePropW(window, modeProperty);
+        RemovePropW(window, dockWidthProperty);
         RemovePropW(window, dockHeightProperty);
     }
     const LRESULT result = DefSubclassProc(window, message, wp, lp);

@@ -35,6 +35,8 @@ struct TaskbarLayout {
     RECT monitor{};
     bool widgets = false;
     std::vector<RECT> buttons;
+
+    MotionAxis Axis() const { return TaskbarAxis(dock); }
 };
 
 TaskbarLayout ReadTaskbarGeometry(HWND bar);

@@ -28,45 +28,52 @@ bool SameRegion(HRGN left, HRGN right) {
 }
 
 struct Span {
-    LONG left;
-    LONG right;
+    LONG first;
+    LONG last;
 };
 
 struct Groups {
     Span apps;
     Span notification;
-    LONG widgetsRight;
+    LONG widgetsEnd;
     LONG gap;
 };
 
 Groups MeasureGroups(const TaskbarLayout& layout) {
     const RECT& bounds = layout.dock;
+    const auto axis = layout.Axis();
     const UINT dpi = layout.dpi;
-    Span apps{layout.buttons.front().left, layout.buttons.back().right};
-    const LONG widgetWidth = (bounds.bottom - bounds.top) * 4;
-    const LONG widgetsRight = layout.widgets && apps.left - bounds.left > widgetWidth
-        ? bounds.left + widgetWidth : bounds.left;
-    if (widgetsRight > bounds.left) apps.left = bounds.left;
-    const Span notification{std::max(bounds.left, layout.notification.left - 2),
-                            std::min(bounds.right, layout.notification.right + 2)};
-    const LONG gap = std::clamp(notification.left - apps.right, 0L, static_cast<LONG>(MulDiv(8, dpi, 96)));
-    return {apps, notification, widgetsRight, gap};
+    const LONG first = AxisStart(bounds, axis);
+    Span apps{AxisStart(layout.buttons.front(), axis), AxisEnd(layout.buttons.back(), axis)};
+    const LONG widgetLength = AxisSize(bounds, OtherAxis(axis)) * 4;
+    const LONG widgetsEnd = layout.widgets && axis == MotionAxis::horizontal && apps.first - first > widgetLength
+        ? first + widgetLength : first;
+    if (widgetsEnd > first) apps.first = first;
+    const Span notification{std::max(first, AxisStart(layout.notification, axis) - 2),
+                            std::min(AxisEnd(bounds, axis), AxisEnd(layout.notification, axis) + 2)};
+    const LONG gap = std::clamp(notification.first - apps.last, 0L, static_cast<LONG>(MulDiv(8, dpi, 96)));
+    return {apps, notification, widgetsEnd, gap};
 }
 
 RECT StripAt(const TaskbarLayout& layout, Span span, IconOffset offset) {
-    RECT strip{span.left, layout.dock.top, span.right, layout.dock.bottom};
+    const auto axis = layout.Axis();
+    RECT strip = layout.dock;
+    AxisStart(strip, axis) = span.first;
+    AxisEnd(strip, axis) = span.last;
     OffsetRect(&strip, offset.x, offset.y);
     return strip;
 }
 
 void PublishAppsInkSpan(const TaskbarLayout& layout) {
-    const LONG left = layout.startButton.left - layout.dock.left;
-    const LONG right = layout.buttons.back().right - layout.dock.left;
-    if (left < 0 || right <= left || right > UINT16_MAX) {
+    const auto axis = layout.Axis();
+    const LONG origin = AxisStart(layout.dock, axis);
+    const LONG first = AxisStart(layout.startButton, axis) - origin;
+    const LONG last = AxisEnd(layout.buttons.back(), axis) - origin;
+    if (first < 0 || last <= first || last > UINT16_MAX) {
         RemovePropW(layout.bar, appsInkSpanProperty);
         return;
     }
-    const auto value = reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(MAKELONG(left, right)));
+    const auto value = reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(MAKELONG(first, last)));
     if (GetPropW(layout.bar, appsInkSpanProperty) != value)
         SetPropW(layout.bar, appsInkSpanProperty, value);
 }
@@ -76,9 +83,9 @@ Region BuildRegion(const TaskbarLayout& layout, IconOffsets offsets, HRGN native
     auto part = EmptyRegion();
     if (!region || !part) return Region(nullptr, DeleteObject);
     const Groups groups = MeasureGroups(layout);
-    const auto add = [&](LONG left, LONG right, IconOffset offset) {
-        if (left >= right) return true;
-        auto rect = StripAt(layout, {left, right}, offset);
+    const auto add = [&](LONG first, LONG last, IconOffset offset) {
+        if (first >= last) return true;
+        auto rect = StripAt(layout, {first, last}, offset);
         if (!IntersectRect(&rect, &rect, &layout.bounds)) return false;
         OffsetRect(&rect, -layout.dock.left - offset.x, -layout.dock.top - offset.y);
         if (!SetRectRgn(part.get(), rect.left, rect.top, rect.right, rect.bottom)) return false;
@@ -92,24 +99,26 @@ Region BuildRegion(const TaskbarLayout& layout, IconOffsets offsets, HRGN native
     const auto addSpan = [&](Span span, IconGroup group) {
         const auto fallback = offsets.For(group);
         const auto row = slices.For(group);
-        LONG left = span.left;
+        LONG start = span.first;
         for (const auto& slice : row.slices) {
-            if (slice.left >= span.right) break;
-            const LONG first = std::max(left, slice.left);
-            const LONG last = std::min(span.right, slice.right);
+            if (slice.first >= span.last) break;
+            const LONG first = std::max(start, slice.first);
+            const LONG last = std::min(span.last, slice.last);
             if (first >= last) continue;
             auto position = fallback;
             position.Along(row.axis) = slice.offset;
-            if (!add(left, first, fallback) || !add(first, last, position)) return false;
-            left = last;
+            if (!add(start, first, fallback) || !add(first, last, position)) return false;
+            start = last;
         }
-        return add(left, span.right, fallback);
+        return add(start, span.last, fallback);
     };
     if (!addSpan(groups.notification, IconGroup::notification)) return Region(nullptr, DeleteObject);
+    const auto axis = layout.Axis();
     for (const auto& button : layout.buttons) {
-        if (!addSpan({button.left, button.right}, IconGroup::apps)) return Region(nullptr, DeleteObject);
+        if (!addSpan({AxisStart(button, axis), AxisEnd(button, axis)}, IconGroup::apps))
+            return Region(nullptr, DeleteObject);
     }
-    if (!add(layout.dock.left, groups.widgetsRight, offsets.apps)) return Region(nullptr, DeleteObject);
+    if (!add(AxisStart(layout.dock, axis), groups.widgetsEnd, offsets.apps)) return Region(nullptr, DeleteObject);
     return region;
 }
 
@@ -139,15 +148,18 @@ IconOffset IconTravel::Clamp(IconGroup group, IconOffset position) const {
 }
 
 bool IconTravel::ShareRow(IconOffsets offsets) const {
-    return std::abs(offsets.apps.y - offsets.notification.y) < height;
+    const auto across = OtherAxis(along);
+    return std::abs(offsets.apps.Along(across) - offsets.notification.Along(across)) < thickness;
 }
 
 IconOffsets IconTravel::Project(IconOffsets offsets) const {
     offsets.apps = Clamp(IconGroup::apps, offsets.apps);
     offsets.notification = Clamp(IconGroup::notification, offsets.notification);
     if (ShareRow(offsets)) {
-        offsets.notification.x = std::max(offsets.notification.x, minimum.apps.x - clearance);
-        offsets.apps.x = std::min(offsets.apps.x, offsets.notification.x + clearance);
+        auto& tray = offsets.notification.Along(along);
+        auto& apps = offsets.apps.Along(along);
+        tray = std::max(tray, minimum.apps.Along(along) - clearance);
+        apps = std::min(apps, tray + clearance);
     }
     return offsets;
 }
@@ -155,16 +167,24 @@ IconOffsets IconTravel::Project(IconOffsets offsets) const {
 IconTravel TaskbarRegion::Travel(const TaskbarLayout& layout) {
     if (layout.buttons.empty()) return {};
     const Groups groups = MeasureGroups(layout);
-    const LONG minimumY = std::min(0L, layout.bounds.top - layout.dock.top);
-    const LONG maximumY = std::max(0L, layout.bounds.bottom - layout.dock.bottom);
-    const LONG minimumApps = std::min(0L, layout.dock.left - groups.apps.left);
-    const LONG minimumNotification = std::min(0L, layout.dock.left - groups.notification.left);
-    const LONG maximumApps = std::max(0L, layout.dock.right - groups.apps.right);
-    const LONG maximumNotification = std::max(0L, layout.dock.right - groups.notification.right);
-    const LONG clearance = std::max(0L, groups.notification.left - groups.apps.right - groups.gap);
-    return {{{minimumApps, minimumY}, {minimumNotification, minimumY}},
-            {{maximumApps, maximumY}, {maximumNotification, maximumY}},
-            clearance, layout.dock.bottom - layout.dock.top};
+    const auto along = layout.Axis();
+    const auto across = OtherAxis(along);
+    const LONG minimumAcross = std::min(0L, AxisStart(layout.bounds, across) - AxisStart(layout.dock, across));
+    const LONG maximumAcross = std::max(0L, AxisEnd(layout.bounds, across) - AxisEnd(layout.dock, across));
+    IconTravel travel;
+    travel.along = along;
+    travel.thickness = AxisSize(layout.dock, across);
+    travel.clearance = std::max(0L, groups.notification.first - groups.apps.last - groups.gap);
+    for (const auto group : {IconGroup::apps, IconGroup::notification}) {
+        const auto span = group == IconGroup::apps ? groups.apps : groups.notification;
+        auto& minimum = travel.minimum.For(group);
+        auto& maximum = travel.maximum.For(group);
+        minimum.Along(along) = std::min(0L, AxisStart(layout.dock, along) - span.first);
+        maximum.Along(along) = std::max(0L, AxisEnd(layout.dock, along) - span.last);
+        minimum.Along(across) = minimumAcross;
+        maximum.Along(across) = maximumAcross;
+    }
+    return travel;
 }
 
 bool TaskbarRegion::Fits(const TaskbarLayout& layout, IconOffsets offsets) {
@@ -174,7 +194,8 @@ bool TaskbarRegion::Fits(const TaskbarLayout& layout, IconOffsets offsets) {
 RECT TaskbarRegion::Strip(const TaskbarLayout& layout, IconOffsets offsets, IconGroup group) {
     if (layout.buttons.empty()) return {};
     const auto groups = MeasureGroups(layout);
-    const auto span = group == IconGroup::apps ? Span{layout.startButton.left, groups.apps.right} : groups.notification;
+    const auto span = group == IconGroup::apps ? Span{AxisStart(layout.startButton, layout.Axis()), groups.apps.last}
+                                              : groups.notification;
     return StripAt(layout, span, offsets.For(group));
 }
 
@@ -236,7 +257,7 @@ bool TaskbarRegion::Update(const TaskbarLayout& layout, IconOffsets offsets, boo
     const HWND bar = FindWindowW(L"Shell_TrayWnd", nullptr);
     RECT bounds{};
     if (!bar || !GetWindowRect(bar, &bounds) ||
-        layout.dock.right - layout.dock.left <= layout.dock.bottom - layout.dock.top ||
+        IsRectEmpty(&layout.dock) ||
         FindWindowW(L"Shell_SecondaryTrayWnd", nullptr)) {
         Reset();
         return false;

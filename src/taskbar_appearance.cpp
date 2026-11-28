@@ -137,12 +137,13 @@ struct IconFrame {
     std::optional<POINT> returnAnchor;
     bool stickerDismissed = false;
     std::array<winrt::Windows::Foundation::IInspectable, 5> gripHandlers{};
-    winrt::Windows::Foundation::IInspectable originalHeight{nullptr};
+    winrt::Windows::Foundation::IInspectable originalThickness{nullptr};
     winrt::Windows::Foundation::IInspectable originalAlignment{nullptr};
-    double rowHeight = 0;
-    double previousHeight = 0;
-    xaml::VerticalAlignment previousAlignment = xaml::VerticalAlignment::Stretch;
-    xaml::VerticalAlignment rowAlignment = xaml::VerticalAlignment::Stretch;
+    double fixedThickness = 0;
+    double previousThickness = 0;
+    int previousAlignment = 0;
+    int dockAlignment = 0;
+    MotionAxis thicknessAxis = MotionAxis::vertical;
 
     bool Move(IconOffset pixels, UINT dpi) noexcept try {
         return translation.Move(frame.get(), pixels.x * 96.0 / dpi, pixels.y * 96.0 / dpi);
@@ -150,21 +151,39 @@ struct IconFrame {
         return false;
     }
 
-    bool SetRow(double height, bool top = false) noexcept try {
+    bool SetThickness(double thickness, MotionAxis axis = MotionAxis::vertical, bool atStart = false) noexcept try {
         const auto target = frame.get();
         if (!target) return false;
-        const auto heightProperty = xaml::FrameworkElement::HeightProperty();
-        const auto alignmentProperty = xaml::FrameworkElement::VerticalAlignmentProperty();
-        if (height) {
-            originalHeight = target.ReadLocalValue(heightProperty);
+        if (!thickness && !fixedThickness) return true;
+        const bool horizontal = (thickness ? axis : thicknessAxis) == MotionAxis::horizontal;
+        const auto sizeProperty = horizontal ? xaml::FrameworkElement::WidthProperty()
+                                             : xaml::FrameworkElement::HeightProperty();
+        const auto alignmentProperty = horizontal ? xaml::FrameworkElement::HorizontalAlignmentProperty()
+                                                  : xaml::FrameworkElement::VerticalAlignmentProperty();
+        const auto size = horizontal ? target.Width() : target.Height();
+        const auto alignment = horizontal ? static_cast<int>(target.HorizontalAlignment())
+                                          : static_cast<int>(target.VerticalAlignment());
+        const auto setSize = [&](double value) {
+            if (horizontal) target.Width(value);
+            else target.Height(value);
+        };
+        const auto setAlignment = [&](int value) {
+            if (horizontal) target.HorizontalAlignment(static_cast<xaml::HorizontalAlignment>(value));
+            else target.VerticalAlignment(static_cast<xaml::VerticalAlignment>(value));
+        };
+        if (thickness) {
+            originalThickness = target.ReadLocalValue(sizeProperty);
             originalAlignment = target.ReadLocalValue(alignmentProperty);
-            previousHeight = target.Height();
-            previousAlignment = target.VerticalAlignment();
-            rowHeight = height;
-            rowAlignment = top ? xaml::VerticalAlignment::Top : xaml::VerticalAlignment::Bottom;
-            target.Height(height);
-            target.VerticalAlignment(rowAlignment);
-        } else if (rowHeight) {
+            previousThickness = size;
+            previousAlignment = alignment;
+            fixedThickness = thickness;
+            thicknessAxis = axis;
+            dockAlignment = horizontal
+                ? static_cast<int>(atStart ? xaml::HorizontalAlignment::Left : xaml::HorizontalAlignment::Right)
+                : static_cast<int>(atStart ? xaml::VerticalAlignment::Top : xaml::VerticalAlignment::Bottom);
+            setSize(thickness);
+            setAlignment(dockAlignment);
+        } else {
             const auto restore = [&](const auto& property, const auto& original, auto fallback) {
                 try {
                     if (original == xaml::DependencyProperty::UnsetValue()) target.ClearValue(property);
@@ -173,12 +192,12 @@ struct IconFrame {
                     fallback();
                 }
             };
-            if (target.Height() == rowHeight)
-                restore(heightProperty, originalHeight, [&] { target.Height(previousHeight); });
-            if (target.VerticalAlignment() == rowAlignment)
-                restore(alignmentProperty, originalAlignment, [&] { target.VerticalAlignment(previousAlignment); });
-            rowHeight = 0;
-            originalHeight = nullptr;
+            if (size == fixedThickness)
+                restore(sizeProperty, originalThickness, [&] { setSize(previousThickness); });
+            if (alignment == dockAlignment)
+                restore(alignmentProperty, originalAlignment, [&] { setAlignment(previousAlignment); });
+            fixedThickness = 0;
+            originalThickness = nullptr;
             originalAlignment = nullptr;
         }
         return true;
@@ -260,6 +279,11 @@ struct AppearanceState {
 };
 
 AppearanceState state;
+
+bool TransparentBackgroundEnabled() {
+    // A locked session stops interaction, but Explorer can still refresh the taskbar brushes.
+    return !state.highContrast && (state.enabled || state.layerMode == appearance::LayerMode::suspended);
+}
 
 struct LayoutResult {
     fullwintb::appearance::TaskbarLayout layout;
@@ -401,12 +425,14 @@ void PublishOffsets(HWND bar, appearance::IconOffsets previous) {
 }
 
 void FollowPopups() {
-    const HWND bar = state.layerMode == appearance::LayerMode::floating ? state.layout.bar : nullptr;
+    const HWND bar = state.enabled && !state.highContrast && state.layerMode == appearance::LayerMode::floating
+        ? state.layout.bar : nullptr;
     const auto appsOffset = state.apps.wave.AnchorOffset(state.offsets.apps);
-    appearance::FollowTaskbarThumbnails(appsOffset.y ? bar : nullptr, appsOffset.y);
+    const LONG awayFromDock = bar ? appsOffset.Along(appearance::OtherAxis(state.layout.Axis())) : 0;
+    appearance::FollowTaskbarThumbnails(awayFromDock ? bar : nullptr, awayFromDock);
     const auto trayOffset = state.notification.wave.GripOffset(state.offsets.notification);
     appearance::FollowTrayOverflow(bar, state.layout.dock, trayOffset.x, trayOffset.y,
-                                  trayOffset ? state.notification.frame.get() : nullptr);
+                                  bar ? state.notification.frame.get() : nullptr);
 }
 
 enum class IconWrite { applied, retry, failed };
@@ -441,10 +467,10 @@ IconWrite MoveIcons(appearance::IconOffsets next, bool animated, bool positionCh
     return IconWrite::applied;
 }
 
-void CloseVerticalCanvas() {
-    if (!state.layer.CanvasOpen() && !state.apps.rowHeight && !state.notification.rowHeight) return;
-    state.apps.SetRow(0);
-    state.notification.SetRow(0);
+void CloseMotionCanvas() {
+    if (!state.layer.CanvasOpen() && !state.apps.fixedThickness && !state.notification.fixedThickness) return;
+    state.apps.SetThickness(0);
+    state.notification.SetThickness(0);
     state.layer.CloseCanvas();
     RECT bounds{};
     if (GetWindowRect(state.layout.bar, &bounds) && EqualRect(&bounds, &state.layout.dock)) {
@@ -540,7 +566,7 @@ void RestoreIcons() {
         ++state.layoutGeneration;
     }
     const bool hadCanvas = state.layer.CanvasOpen();
-    CloseVerticalCanvas();
+    CloseMotionCanvas();
     if (moved || hadCanvas || finishingRegion) ScheduleLayout();
 }
 
@@ -550,7 +576,7 @@ void InvalidatePinnedLayout() {
     state.layout = {};
 }
 
-bool PrepareVerticalTarget(LONG wanted, LONG& target) {
+bool PrepareCrossAxisTarget(LONG wanted, LONG& target) {
     const bool open = state.layer.CanvasOpen();
     if (open && CanvasLost()) {
         RestoreIcons();
@@ -560,14 +586,15 @@ bool PrepareVerticalTarget(LONG wanted, LONG& target) {
     MONITORINFO monitor{sizeof(monitor)};
     const HMONITOR display = MonitorFromWindow(layout.bar, MONITOR_DEFAULTTONULL);
     if (!display || !GetMonitorInfoW(display, &monitor)) return false;
-    const bool top = layout.dock.top == monitor.rcMonitor.top;
-    const bool bottom = layout.dock.bottom == monitor.rcMonitor.bottom;
-    if (!top && !bottom) return false;
-    const LONG height = layout.dock.bottom - layout.dock.top;
-    const LONG room = monitor.rcMonitor.bottom - monitor.rcMonitor.top - height;
+    const auto axis = appearance::OtherAxis(layout.Axis());
+    const bool atStart = appearance::AxisStart(layout.dock, axis) == appearance::AxisStart(monitor.rcMonitor, axis);
+    const bool atEnd = appearance::AxisEnd(layout.dock, axis) == appearance::AxisEnd(monitor.rcMonitor, axis);
+    if (!atStart && !atEnd) return false;
+    const LONG thickness = appearance::AxisSize(layout.dock, axis);
+    const LONG room = appearance::AxisSize(monitor.rcMonitor, axis) - thickness;
     if (room <= 0) return false;
-    target = top ? std::clamp(wanted, 0L, room) : std::clamp(wanted, -room, 0L);
-    const LONG extent = layout.bounds.bottom - layout.bounds.top - height;
+    target = atStart ? std::clamp(wanted, 0L, room) : std::clamp(wanted, -room, 0L);
+    const LONG extent = appearance::AxisSize(layout.bounds, axis) - thickness;
     if (open && std::abs(target) <= extent) return true;
     if (!target || !state.region.OwnsCurrent()) return false;
     // Grow the backing surface as needed instead of reserving an entire
@@ -575,9 +602,10 @@ bool PrepareVerticalTarget(LONG wanted, LONG& target) {
     const LONG headroom = MulDiv(24, layout.dpi, 96);
     const LONG initial = MulDiv(116, layout.dpi, 96);
     const LONG travel = std::min(room, std::max({initial, extent * 2, std::abs(target) + headroom}));
-    const double row = height * 96.0 / layout.dpi;
-    if ((!open && (!state.apps.SetRow(row, top) || !state.notification.SetRow(row, top))) ||
-        !state.layer.EnsureCanvas(travel, top)) {
+    const double size = thickness * 96.0 / layout.dpi;
+    if ((!open && (!state.apps.SetThickness(size, axis, atStart) ||
+                   !state.notification.SetThickness(size, axis, atStart))) ||
+        !state.layer.EnsureCanvas(travel, axis, atStart)) {
         if (!open || CanvasLost() || !state.layer.CanvasOpen()) RestoreIcons();
         return false;
     }
@@ -597,7 +625,10 @@ RECT StartDisplayBounds() {
     return bounds;
 }
 
-bool AppsPushedByTray() { return state.offsets.apps.x < state.appsMotion.Position().x; }
+bool AppsPushedByTray() {
+    const auto axis = state.layout.Axis();
+    return state.offsets.apps.Along(axis) < state.appsMotion.Position().Along(axis);
+}
 
 void UpdateLatches() {
     const bool visible = state.layerMode == appearance::LayerMode::floating &&
@@ -686,11 +717,13 @@ void RecoverPinnedLayout() {
         ScheduleLayout();
         return;
     }
-    const LONG farthest = std::abs(saved.offsets.apps.y) >= std::abs(saved.offsets.notification.y)
-        ? saved.offsets.apps.y : saved.offsets.notification.y;
+    const auto across = appearance::OtherAxis(state.layout.Axis());
+    const LONG apps = saved.offsets.apps.Along(across);
+    const LONG tray = saved.offsets.notification.Along(across);
+    const LONG farthest = std::abs(apps) >= std::abs(tray) ? apps : tray;
     if (farthest) {
         LONG allowed = 0;
-        if (!PrepareVerticalTarget(farthest, allowed)) {
+        if (!PrepareCrossAxisTarget(farthest, allowed)) {
             InvalidatePinnedLayout();
             ScheduleLayout();
             return;
@@ -804,15 +837,17 @@ void StepMotion() {
     // position so it can return there as the tray releases it.
     auto next = travel.Project(freePositions);
     const bool sharedRow = travel.ShareRow(next);
+    const auto along = travel.along;
     auto trayMinimum = travel.minimum.notification;
-    if (sharedRow) trayMinimum.x = std::max(trayMinimum.x, travel.minimum.apps.x - travel.clearance);
+    if (sharedRow)
+        trayMinimum.Along(along) = std::max(trayMinimum.Along(along), travel.minimum.apps.Along(along) - travel.clearance);
     if (state.peeling != appearance::IconGroup::notification)
         state.notification.wave.Plan(next.notification, trayMinimum, travel.maximum.notification, frame);
     auto appsMaximum = travel.maximum.apps;
     if (sharedRow) {
-        appsMaximum.x = std::clamp(state.notification.wave.LeadingX(next.notification) + travel.clearance,
-                                   travel.minimum.apps.x, appsMaximum.x);
-        next.apps.x = std::min(next.apps.x, appsMaximum.x);
+        appsMaximum.Along(along) = std::clamp(state.notification.wave.LeadingOffset(next.notification, along) + travel.clearance,
+                                             travel.minimum.apps.Along(along), appsMaximum.Along(along));
+        next.apps.Along(along) = std::min(next.apps.Along(along), appsMaximum.Along(along));
     }
     if (state.peeling != appearance::IconGroup::apps)
         state.apps.wave.Plan(next.apps, travel.minimum.apps, appsMaximum, frame);
@@ -840,13 +875,22 @@ void StepMotion() {
         for (const auto group : iconGroups) {
             if (!Motion(group).Dragging()) Frame(group).wave.Clear();
         }
+        if (state.layer.CanvasOpen() && state.layout.Axis() == MotionAxis::vertical &&
+            state.offsets == appearance::IconOffsets{} &&
+            !state.appsMotion.Dragging() && !state.notificationMotion.Dragging()) {
+            // Explorer anchors a side-dock flyout to the edge of its HWND.
+            // Retire the widened canvas once both groups have returned.
+            CloseMotionCanvas();
+            FollowPopups();
+        }
         ScheduleLayout();
     }
     QueueMotion(now);
 }
 
 bool ProjectMotionTarget(appearance::IconGroup group, MotionAxis axis, IconOffset& target) {
-    if (axis == MotionAxis::vertical && target.y && !PrepareVerticalTarget(target.y, target.y)) return false;
+    if (axis != state.layout.Axis() && target.Along(axis) &&
+        !PrepareCrossAxisTarget(target.Along(axis), target.Along(axis))) return false;
     auto positions = state.offsets;
     positions.For(group) = target;
     target = appearance::TaskbarRegion::Travel(state.layout).Project(positions).For(group);
@@ -860,7 +904,8 @@ bool AimMotion(appearance::IconGroup group, MotionAxis axis, LONG delta) {
     const auto drawn = state.offsets.For(group);
     const bool pushed = group == appearance::IconGroup::apps && AppsPushedByTray();
     auto start = motion.Target();
-    if (pushed) start.x = drawn.x;
+    const auto along = state.layout.Axis();
+    if (pushed) start.Along(along) = drawn.Along(along);
     auto target = start;
     target.Along(axis) += delta;
     if (!ProjectMotionTarget(group, axis, target) || (target == start && (pushed || !target))) return false;
@@ -887,7 +932,8 @@ bool ScrollMotion(appearance::IconGroup group, int delta, std::optional<POINT> a
     const auto drawn = state.offsets.For(group);
     const bool pushed = group == appearance::IconGroup::apps && AppsPushedByTray();
     auto target = motion.WheelOrigin();
-    if (pushed) target.x = drawn.x;
+    const auto along = state.layout.Axis();
+    if (pushed) target.Along(along) = drawn.Along(along);
     target.Along(axis) += step;
     if (!ProjectMotionTarget(group, axis, target) || (target == drawn && !target)) return false;
     if (pushed) motion.SetPosition(drawn);
@@ -1230,7 +1276,7 @@ void WatchFill(Background& entry, bool watch) {
         const auto handle = entry.handle;
         entry.watch = shape.RegisterPropertyChangedCallback(property,
             [handle](const xaml::DependencyObject&, const xaml::DependencyProperty&) {
-                if (!state.enabled || state.highContrast) return;
+                if (!TransparentBackgroundEnabled()) return;
                 const auto existing = std::find_if(state.backgrounds.begin(), state.backgrounds.end(),
                     [handle](const Background& item) { return item.handle == handle; });
                 if (existing != state.backgrounds.end()) existing->Apply(true);
@@ -1312,10 +1358,11 @@ void SetAppearance(bool enabled, appearance::Ink ink = appearance::Ink::system,
             // Explorer may have just replaced this theme root.
         }
     }
+    const bool transparent = TransparentBackgroundEnabled();
     for (auto& background : state.backgrounds) {
         try {
-            WatchFill(background, active);
-            background.Apply(active);
+            WatchFill(background, transparent);
+            background.Apply(transparent);
         } catch (const winrt::hresult_error&) {
             // Explorer may have just discarded the XAML island.
         }
@@ -1609,7 +1656,7 @@ LRESULT CALLBACK AppearanceProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
             } else {
                 state.layout = std::move(result.layout);
                 UpdateLatches();
-                if (state.offsets.notification) FollowPopups();
+                FollowPopups();
             }
             settling = state.region.Update(state.layout, state.offsets);
             if (AwaitingReturn()) QueueMotion(GetTickCount64());
@@ -1757,8 +1804,9 @@ struct VisualObserver : winrt::implements<VisualObserver, IVisualTreeServiceCall
                         return item.handle == element.Handle;
                     })) {
                     entries.push_back(Background{element.Handle, winrt::make_weak(shape)});
-                    WatchFill(entries.back(), state.enabled && !state.highContrast);
-                    entries.back().Apply(state.enabled && !state.highContrast);
+                    const bool transparent = TransparentBackgroundEnabled();
+                    WatchFill(entries.back(), transparent);
+                    entries.back().Apply(transparent);
                     SetPropW(state.control, L"FullWinTB.XamlBackgrounds",
                              reinterpret_cast<HANDLE>(entries.size()));
                     if (!state.apps.frame.get() && winrt::get_class_name(frame) == L"Taskbar.TaskbarFrame") {

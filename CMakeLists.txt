@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.25)
 set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
-project(FullWinTB VERSION 0.1.1 LANGUAGES CXX RC)
+project(FullWinTB VERSION 0.1.2 LANGUAGES CXX RC)
 # Use the existing Explorer component for updates confined to the EXE.
-set(FULLWINTB_APPEARANCE_VERSION 0.1.6)
+set(FULLWINTB_APPEARANCE_VERSION 0.1.10)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -85,7 +85,7 @@ option(BUILD_TESTING "Build FullWinTB's geometry tests" OFF)
 if(BUILD_TESTING)
     enable_testing()
     add_executable(FullWinTBGeometryTests tests/geometry_tests.cpp src/ink_sampling.cpp
-        src/taskbar_region.cpp src/taskbar_layer.cpp src/sticker_atlas.rc)
+        src/taskbar_region.cpp src/taskbar_layer.cpp src/taskbar_latch.cpp src/sticker_atlas.rc)
     fullwintb_native(FullWinTBGeometryTests)
     target_link_libraries(FullWinTBGeometryTests PRIVATE user32 gdi32 comctl32)
     add_test(NAME FullWinTBGeometry COMMAND FullWinTBGeometryTests)

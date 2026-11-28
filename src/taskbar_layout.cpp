@@ -11,17 +11,19 @@ namespace {
 
 void MergeButtonSpans(TaskbarLayout& layout) {
     auto& buttons = layout.buttons;
+    const auto axis = layout.Axis();
     const LONG padding = std::max(2, MulDiv(3, layout.dpi, 96));
-    std::sort(buttons.begin(), buttons.end(), [](const RECT& first, const RECT& second) {
-        return first.left < second.left;
+    std::sort(buttons.begin(), buttons.end(), [axis](const RECT& first, const RECT& second) {
+        return AxisStart(first, axis) < AxisStart(second, axis);
     });
     std::size_t used = 0;
     for (const auto& bounds : buttons) {
-        const RECT strip{std::max(layout.dock.left, bounds.left - padding), layout.dock.top,
-                         std::min(layout.dock.right, bounds.right + padding), layout.dock.bottom};
-        if (used && strip.left <= buttons[used - 1].right) {
+        RECT strip = layout.dock;
+        AxisStart(strip, axis) = std::max(AxisStart(layout.dock, axis), AxisStart(bounds, axis) - padding);
+        AxisEnd(strip, axis) = std::min(AxisEnd(layout.dock, axis), AxisEnd(bounds, axis) + padding);
+        if (used && AxisStart(strip, axis) <= AxisEnd(buttons[used - 1], axis)) {
             auto& last = buttons[used - 1];
-            last.right = std::max(last.right, strip.right);
+            AxisEnd(last, axis) = std::max(AxisEnd(last, axis), AxisEnd(strip, axis));
         } else {
             buttons[used++] = strip;
         }
@@ -40,8 +42,9 @@ TaskbarLayout ReadTaskbarGeometry(HWND bar) {
         !ReadDockBounds(bar, result.dock) ||
         !GetWindowRect(notification, &result.notification) ||
         !Overlaps(result.bounds, result.notification)) return {};
-    result.notification.top = result.dock.top;
-    result.notification.bottom = result.dock.bottom;
+    const auto across = OtherAxis(result.Axis());
+    AxisStart(result.notification, across) = AxisStart(result.dock, across);
+    AxisEnd(result.notification, across) = AxisEnd(result.dock, across);
     result.monitor = result.dock;
     MONITORINFO monitor{sizeof(monitor)};
     if (GetMonitorInfoW(MonitorFromRect(&result.dock, MONITOR_DEFAULTTONEAREST), &monitor))
@@ -99,6 +102,7 @@ TaskbarLayout Measure(HWND bar, IconOffset offset) {
     const HWND start = FindWindowExW(bar, nullptr, L"Start", nullptr);
     const bool hasNativeStart = start && GetWindowRect(start, &nativeStart) &&
                                 Overlaps(nativeStart, result.bounds);
+    const auto axis = result.Axis();
     bool foundStart = false;
     for (int i = 0; i < count; ++i) {
         winrt::com_ptr<IUIAutomationElement> item;
@@ -107,13 +111,13 @@ TaskbarLayout Measure(HWND bar, IconOffset offset) {
         if (FAILED(items->GetElement(i, item.put())) || !item ||
             FAILED(item->get_CachedControlType(&type)) || FAILED(item->get_CachedBoundingRectangle(&bounds))) continue;
         OffsetRect(&bounds, -offset.x, -offset.y);
-        if (!Overlaps(bounds, result.dock) || bounds.left >= result.notification.left ||
-            bounds.right > result.dock.right) continue;
+        if (!Overlaps(bounds, result.dock) || AxisStart(bounds, axis) >= AxisStart(result.notification, axis) ||
+            AxisEnd(bounds, axis) > AxisEnd(result.dock, axis)) continue;
         if (type != UIA_ButtonControlTypeId && type != UIA_SplitButtonControlTypeId) continue;
         BSTR idText = nullptr;
         if (SUCCEEDED(item->get_CachedAutomationId(&idText)) && idText) {
             if (std::wstring_view(idText, SysStringLen(idText)) == L"StartButton") {
-                foundStart = !hasNativeStart || Near(bounds.left, nativeStart.left, 12);
+                foundStart = !hasNativeStart || Near(AxisStart(bounds, axis), AxisStart(nativeStart, axis), 12);
                 result.startButton = bounds;
             }
             SysFreeString(idText);

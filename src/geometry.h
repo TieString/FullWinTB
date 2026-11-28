@@ -89,6 +89,10 @@ struct PopupPlacement {
     bool below;
 };
 
+inline constexpr RECT TransposeRect(const RECT& rect) {
+    return {rect.top, rect.left, rect.bottom, rect.right};
+}
+
 inline PopupPlacement PlacePopup(const RECT& row, const RECT& surface, LONG height, LONG gap, bool preferBelow) {
     const LONG above = row.top - gap - height;
     const LONG below = row.bottom + gap;

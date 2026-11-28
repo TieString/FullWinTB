@@ -34,6 +34,7 @@ private:
     HWND window_ = nullptr;
     HWND actions_ = nullptr;
     RECT bounds_{};
+    RECT gripClearance_{};
     UINT dpi_ = 96;
     IconGroup group_ = IconGroup::apps;
     bool visible_ = false;

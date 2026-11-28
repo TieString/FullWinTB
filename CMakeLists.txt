@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
-project(FullWinTB VERSION 0.1.3 LANGUAGES CXX RC)
+project(FullWinTB VERSION 0.1.1 LANGUAGES CXX RC)
 # Use the existing Explorer component for updates confined to the EXE.
 set(FULLWINTB_APPEARANCE_VERSION 0.1.6)
 

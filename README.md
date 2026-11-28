@@ -1,6 +1,10 @@
-# FullWinTB
+<p align="center">
+  <img src="docs/media/fullwintb-icon.png" alt="FullWinTB 贴纸图标" width="112" height="112">
+</p>
 
-FullWinTB 让 Windows 最大化窗口延伸到任务栏后面，让原生任务栏图标和系统托盘显示在窗口前面。
+<h1 align="center">FullWinTB</h1>
+
+<p align="center">FullWinTB 让 Windows 最大化窗口延伸到任务栏后面，让原生任务栏图标和系统托盘显示在窗口前面。</p>
 
 ## 截图
 
